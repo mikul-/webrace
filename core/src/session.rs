@@ -135,3 +135,71 @@ pub fn session_reset(id: usize) {
         }
     });
 }
+
+// Race state getters.
+
+#[wasm_bindgen]
+pub fn session_race_running(id: usize) -> bool {
+    SESSIONS.with(|s| {
+        s.borrow()
+            .get(id)
+            .and_then(|o| o.as_ref())
+            .map(|s| s.race_running())
+            .unwrap_or(false)
+    })
+}
+
+#[wasm_bindgen]
+pub fn session_race_finished(id: usize) -> bool {
+    SESSIONS.with(|s| {
+        s.borrow()
+            .get(id)
+            .and_then(|o| o.as_ref())
+            .map(|s| s.race_finished())
+            .unwrap_or(false)
+    })
+}
+
+#[wasm_bindgen]
+pub fn session_race_ticks(id: usize) -> u32 {
+    SESSIONS.with(|s| {
+        s.borrow()
+            .get(id)
+            .and_then(|o| o.as_ref())
+            .map(|s| s.race_ticks())
+            .unwrap_or(0)
+    })
+}
+
+#[wasm_bindgen]
+pub fn session_race_finished_ticks(id: usize) -> u32 {
+    SESSIONS.with(|s| {
+        s.borrow()
+            .get(id)
+            .and_then(|o| o.as_ref())
+            .and_then(|s| s.race_finished_ticks())
+            .unwrap_or(0)
+    })
+}
+
+#[wasm_bindgen]
+pub fn session_race_splits(id: usize) -> Vec<u32> {
+    SESSIONS.with(|s| {
+        s.borrow()
+            .get(id)
+            .and_then(|o| o.as_ref())
+            .map(|s| s.race_splits())
+            .unwrap_or_default()
+    })
+}
+
+#[wasm_bindgen]
+pub fn session_race_total_checkpoints(id: usize) -> usize {
+    SESSIONS.with(|s| {
+        s.borrow()
+            .get(id)
+            .and_then(|o| o.as_ref())
+            .map(|s| s.race_total_checkpoints())
+            .unwrap_or(0)
+    })
+}

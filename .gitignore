@@ -12,3 +12,7 @@ web/pkg/
 node_modules/
 **/node_modules/
 **/.vite/
+server/*.db
+server/*.db-journal
+server/*.db-wal
+server/*.db-shm

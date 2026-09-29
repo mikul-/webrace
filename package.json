@@ -4,6 +4,7 @@
   "scripts": {
     "wasm": "./scripts/build-wasm.sh",
     "maps": "node server/map-server.mjs",
+    "leaderboard": "node server/leaderboard.mjs",
     "dev": "npm --prefix web run dev",
     "build": "npm --prefix web run build",
     "test": "cargo test --manifest-path core/Cargo.toml"

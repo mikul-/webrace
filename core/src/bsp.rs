@@ -69,6 +69,9 @@ pub struct Bsp {
     /// Surface flags (SURF_SLICK etc.) per shader.
     pub shader_flags: Vec<i32>,
     pub spawns: Vec<SpawnPoint>,
+    /// Race checkpoint triggers (start, checkpoints, finish). Ordered by the
+    /// map's intended sequence (start first, then checkpoints, then finish).
+    pub race_gates: Vec<RaceGate>,
     /// Individual lightmap images (each LIGHTMAP_W×LIGHTMAP_H×3 bytes).
     pub lightmaps: Vec<Vec<u8>>,
     /// Packed lightmap atlas (RGB), and its width/height in pixels.
@@ -90,6 +93,21 @@ pub struct SpawnPoint {
     pub origin: [f32; 3],
     /// Yaw in radians (from the entity `angle`, Quake convention).
     pub yaw: f32,
+}
+
+/// A race gate: the trigger volume (AABB) and its kind (start/checkpoint/finish).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RaceGateKind {
+    Start,
+    Checkpoint,
+    Finish,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RaceGate {
+    pub kind: RaceGateKind,
+    pub mins: [f32; 3],
+    pub maxs: [f32; 3],
 }
 
 impl Bsp {
@@ -125,6 +143,8 @@ impl Bsp {
         let (brush_plane_offsets, brush_plane_count, brush_plane_ids, brush_shaders) =
             parse_brushes(data, &lumps)?;
         let spawns = parse_spawns(data, &lumps[LUMP_ENTITIES]);
+        let models = parse_models(data, &lumps[LUMP_MODELS]);
+        let race_gates = parse_race(data, &lumps[LUMP_ENTITIES], &models);
         let (lightmap_atlas, atlas_w, atlas_h) = build_lightmap_atlas(&lightmaps);
 
         Ok(Bsp {
@@ -140,6 +160,7 @@ impl Bsp {
             shaders,
             shader_flags,
             spawns,
+            race_gates,
             lightmaps,
             lightmap_atlas,
             lightmap_atlas_w: atlas_w,
@@ -457,6 +478,122 @@ fn parse_spawns(data: &[u8], lump: &(u32, u32)) -> Vec<SpawnPoint> {
         }
     }
     out
+}
+
+/// Parse submodel AABBs from the MODELS lump. Returns `(mins, maxs)` per model
+/// index (model 0 = world, ignored for triggers).
+fn parse_models(data: &[u8], lump: &(u32, u32)) -> Vec<([f32; 3], [f32; 3])> {
+    let (off, len) = *lump;
+    let n = len as usize / DMODEL_SIZE;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let p = off as usize + i * DMODEL_SIZE;
+        let mins = [read_f32(data, p), read_f32(data, p + 4), read_f32(data, p + 8)];
+        let maxs = [read_f32(data, p + 12), read_f32(data, p + 16), read_f32(data, p + 20)];
+        // Coordinates are Quake Z-up (identity), matching our space.
+        out.push((mins, maxs));
+    }
+    out
+}
+
+/// Parse race gates from the entity lump. `trigger_multiple` entities with
+/// `model "*N"` reference a submodel AABB; their `target` names a `target_*`
+/// entity that tells whether it is a start/checkpoint/finish line.
+fn parse_race(
+    data: &[u8],
+    lump: &(u32, u32),
+    models: &[([f32; 3], [f32; 3])],
+) -> Vec<RaceGate> {
+    let (off, len) = *lump;
+    let text = String::from_utf8_lossy(&data[off as usize..(off + len) as usize]);
+
+    // First pass: build a map from targetname -> kind.
+    let mut target_kinds: std::collections::HashMap<String, RaceGateKind> =
+        std::collections::HashMap::new();
+    for block in text.split('{').skip(1) {
+        let Some(end) = block.find('}') else { continue };
+        let block = &block[..end];
+        let mut classname = "";
+        let mut targetname = "";
+        // Tokenize key/value pairs.
+        let mut kv: Vec<&str> = Vec::new();
+        for chunk in block.split('"') {
+            let c = chunk.trim();
+            if !c.is_empty() {
+                kv.push(c);
+            }
+        }
+        let mut i = 0;
+        while i + 1 < kv.len() {
+            match kv[i] {
+                "classname" => classname = kv[i + 1],
+                "targetname" => targetname = kv[i + 1],
+                _ => {}
+            }
+            i += 2;
+        }
+        let kind = match classname {
+            "target_startTimer" => Some(RaceGateKind::Start),
+            "target_stopTimer" => Some(RaceGateKind::Finish),
+            "target_checkpoint" => Some(RaceGateKind::Checkpoint),
+            _ => None,
+        };
+        if let Some(k) = kind {
+            target_kinds.insert(targetname.to_string(), k);
+        }
+    }
+
+    // Second pass: trigger_multiple -> model AABB + target -> kind.
+    let mut gates: Vec<(RaceGateKind, [f32; 3], [f32; 3])> = Vec::new();
+    for block in text.split('{').skip(1) {
+        let Some(end) = block.find('}') else { continue };
+        let block = &block[..end];
+        let mut classname = "";
+        let mut target = "";
+        let mut model = "";
+        let mut kv: Vec<&str> = Vec::new();
+        for chunk in block.split('"') {
+            let c = chunk.trim();
+            if !c.is_empty() {
+                kv.push(c);
+            }
+        }
+        let mut i = 0;
+        while i + 1 < kv.len() {
+            match kv[i] {
+                "classname" => classname = kv[i + 1],
+                "target" => target = kv[i + 1],
+                "model" => model = kv[i + 1],
+                _ => {}
+            }
+            i += 2;
+        }
+        if classname != "trigger_multiple" {
+            continue;
+        }
+        let Some(kind) = target_kinds.get(target).copied() else {
+            continue;
+        };
+        // model "*N" -> submodel index N.
+        let Some(num) = model.strip_prefix('*').and_then(|s| s.parse::<usize>().ok()) else {
+            continue;
+        };
+        let Some((mins, maxs)) = models.get(num) else {
+            continue;
+        };
+        gates.push((kind, *mins, *maxs));
+    }
+
+    // Order: start first, then checkpoints in entity order, then finish.
+    gates.sort_by_key(|(k, _, _)| match k {
+        RaceGateKind::Start => 0,
+        RaceGateKind::Checkpoint => 1,
+        RaceGateKind::Finish => 2,
+    });
+    gates
+        .into_iter()
+        .map(|(kind, mins, maxs)| RaceGate { kind, mins, maxs })
+        .collect()
 }
 
 /// Shaders matching these substrings are not drawn (same skip list as wf-tool).

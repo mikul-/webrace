@@ -6,6 +6,7 @@
 import { Renderer, perspective, lookAt, multiply } from "./render/renderer";
 import { fetchBsp } from "./sim/map";
 import { loadTexture } from "./render/textures";
+import { getIdentity, registerNickname, submitTime } from "./net/leaderboard";
 import init, * as core from "../pkg/webrace_core.js";
 
 const overlay = document.getElementById("overlay")!;
@@ -13,9 +14,11 @@ const statusEl = document.getElementById("status")!;
 const fpsEl = document.getElementById("fps")!;
 const speedEl = document.getElementById("speed")!;
 const mapInput = document.getElementById("map") as HTMLInputElement;
+const nicknameInput = document.getElementById("nickname") as HTMLInputElement;
 const playBtn = document.getElementById("play")!;
 const logEl = document.getElementById("log")!;
 const lockEl = document.getElementById("lock")!;
+const timerEl = document.getElementById("timer")!;
 // Show the unlock state immediately on load (pointerlockchange doesn't fire
 // until a lock attempt happens, so we initialize the label ourselves).
 lockEl.textContent = "🔓 click to lock mouse";
@@ -25,6 +28,8 @@ const canvas = document.getElementById("view") as HTMLCanvasElement;
 let renderer: Renderer | null = null;
 let memory: WebAssembly.Memory | null = null;
 let sessionId: number | null = null;
+let currentMap = "";
+let submitGuard = false; // true once we've submitted the current finish
 
 // Key state.
 const keys = { forward: false, back: false, left: false, right: false, jump: false, crouch: false, special: false };
@@ -49,6 +54,10 @@ async function main() {
       if (e.key === "Enter") void loadMap();
     });
 
+    // Prefill nickname from stored identity.
+    const existing = getIdentity();
+    if (existing) nicknameInput.value = existing.nickname;
+
     const q = new URLSearchParams(location.search).get("map");
     if (q) {
       mapInput.value = q;
@@ -65,6 +74,18 @@ async function loadMap() {
   if (!name || !memory) return;
   setStatus(`loading ${name}…`);
   try {
+    // Ensure a nickname is registered (for leaderboard submission).
+    const nick = nicknameInput.value.trim();
+    if (nick) {
+      try {
+        await registerNickname(nick);
+      } catch (e) {
+        log(`nickname: ${(e as Error).message}`);
+      }
+    }
+    currentMap = name.toLowerCase();
+    submitGuard = false;
+
     const url = `/maps/${name}.bsp`;
     const bytes = await fetchBsp(url);
     const mapId = core.bsp_parse(name, bytes);
@@ -299,6 +320,39 @@ function loop() {
 
     const speed = core.session_speed(sessionId);
     speedEl.textContent = `${Math.round(speed)} ups`;
+
+    // Race timer display.
+    const ticks = core.session_race_ticks(sessionId);
+    const finished = core.session_race_finished(sessionId);
+    const running = core.session_race_running(sessionId);
+    const totalCp = core.session_race_total_checkpoints(sessionId);
+    const splits = core.session_race_splits(sessionId) as unknown as Uint32Array;
+    const fmt = (t: number) => {
+      const ms = (t * 1000) / 250;
+      const m = Math.floor(ms / 60000);
+      const s = Math.floor((ms % 60000) / 1000);
+      const cs = Math.floor((ms % 1000) / 10);
+      return `${m}:${s.toString().padStart(2, "0")}.${cs.toString().padStart(2, "0")}`;
+    };
+    if (finished) {
+      timerEl.textContent = `finish ${fmt(ticks)}`;
+      timerEl.style.color = "#5ce27a";
+      // Submit the time to the leaderboard (once per finish).
+      if (!submitGuard) {
+        submitGuard = true;
+        const identity = getIdentity();
+        if (identity) {
+          const timeMs = Math.round((ticks * 1000) / 250);
+          void submitTime(identity.token, currentMap, timeMs, Array.from(splits));
+        }
+      }
+    } else if (running) {
+      const cpNote = totalCp > 0 ? `  (${splits.length}/${totalCp} cp)` : "";
+      timerEl.textContent = `${fmt(ticks)}${cpNote}`;
+      timerEl.style.color = "#fa00ff";
+    } else {
+      timerEl.textContent = "";
+    }
   }
 
   // Render.

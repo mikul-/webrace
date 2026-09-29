@@ -136,6 +136,21 @@
         width: 100%;
         transform: translateY(-50%);
       }
+      #timer {
+        position: fixed;
+        top: 14px;
+        left: 50%;
+        transform: translateX(-50%);
+        color: #fa00ff;
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+        font-size: 22px;
+        pointer-events: none;
+        text-shadow: 0 1px 0 #000, 0 0 2px #000;
+      }
+      #timer:empty {
+        display: none;
+      }
     </style>
   </head>
   <body>
@@ -146,9 +161,11 @@
     <div id="speed"></div>
     <div id="lock"></div>
     <div id="crosshair"></div>
+    <div id="timer"></div>
     <div id="overlay">
       <h1>webrace</h1>
       <p id="status">loading…</p>
+      <input id="nickname" placeholder="nickname (for leaderboards)" maxlength="20" />
       <input id="map" placeholder="map name (e.g. bipracer3)" value="" />
       <button id="play">Play</button>
       <pre id="log"></pre>

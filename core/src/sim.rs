@@ -3,10 +3,52 @@
 //! Exposed over wasm-bindgen as the "session" the client drives each frame:
 //! feed mouse deltas + held keys, step physics, read the resulting camera.
 
-use crate::bsp::Bsp;
+use crate::bsp::{Bsp, RaceGate, RaceGateKind};
 use crate::input::{Angles, Cmd, MouseConfig, BUTTON_CROUCH, BUTTON_JUMP, BUTTON_SPECIAL};
 use crate::pmove::{Pmove, PlayerState};
 use crate::trace::World;
+
+/// Race progress: elapsed (ticks + current splits) between start and finish.
+#[derive(Clone, Debug)]
+pub struct Race {
+    pub gates: Vec<RaceGate>,
+    /// True once the player has crossed the start line and the timer is running.
+    pub running: bool,
+    /// Ticks elapsed since the start line (converted to ms externally).
+    pub ticks: u32,
+    /// Next checkpoint index the player must pass (gates in order).
+    pub next_checkpoint: usize,
+    /// Split times (in ticks) for each passed checkpoint.
+    pub splits: Vec<u32>,
+    /// Final race time (in ticks), set once finished.
+    pub finished_ticks: Option<u32>,
+    /// Whether a finish has been reached (race complete).
+    pub finished: bool,
+}
+
+impl Race {
+    fn new(gates: Vec<RaceGate>) -> Race {
+        Race {
+            gates,
+            running: false,
+            ticks: 0,
+            next_checkpoint: 0,
+            splits: Vec::new(),
+            finished_ticks: None,
+            finished: false,
+        }
+    }
+
+    /// Reset the race (restart from the beginning).
+    fn reset(&mut self) {
+        self.running = false;
+        self.ticks = 0;
+        self.next_checkpoint = 0;
+        self.splits.clear();
+        self.finished_ticks = None;
+        self.finished = false;
+    }
+}
 
 /// A playable session bound to one loaded map.
 pub struct Session {
@@ -17,6 +59,7 @@ pub struct Session {
     held_cmd: Cmd,
     spawn_origin: [f32; 3],
     spawn_yaw: f32,
+    race: Race,
 }
 
 impl Session {
@@ -43,6 +86,7 @@ impl Session {
         pmove.drop_to_ground(&mut ps);
 
         let yaw = ps.viewangles[1];
+        let race = Race::new(bsp.race_gates.clone());
 
         Ok(Session {
             pmove,
@@ -56,6 +100,7 @@ impl Session {
             held_cmd: Cmd::default(),
             spawn_origin,
             spawn_yaw,
+            race,
         })
     }
 
@@ -72,6 +117,7 @@ impl Session {
         self.angles = Angles { yaw: self.spawn_yaw, ..Default::default() };
         self.held_cmd = Cmd::default();
         self.pmove.drop_to_ground(&mut self.ps);
+        self.race.reset();
     }
 
     pub fn set_sensitivity(&mut self, s: f32) {
@@ -97,6 +143,80 @@ impl Session {
         ];
 
         self.pmove.step(&mut self.ps, &cmd);
+
+        // Race timer: advance and detect gate passes.
+        if self.race.running && !self.race.finished {
+            self.race.ticks = self.race.ticks.saturating_add(1);
+        }
+        self.check_gates();
+    }
+
+    /// Detect gate passes (start/checkpoints/finish) via player AABB overlap.
+    fn check_gates(&mut self) {
+        if self.race.finished {
+            return;
+        }
+        // Player box (full extent) for overlap testing.
+        let mins = crate::trace::PLAYER_MINS;
+        let maxs = crate::trace::PLAYER_MAXS;
+        let pmin = [
+            self.ps.origin[0] + mins[0],
+            self.ps.origin[1] + mins[1],
+            self.ps.origin[2] + mins[2],
+        ];
+        let pmax = [
+            self.ps.origin[0] + maxs[0],
+            self.ps.origin[1] + maxs[1],
+            self.ps.origin[2] + maxs[2],
+        ];
+
+        let gates = self.race.gates.clone();
+        for (i, gate) in gates.iter().enumerate() {
+            let overlaps = pmin[0] <= gate.maxs[0] && pmax[0] >= gate.mins[0]
+                && pmin[1] <= gate.maxs[1] && pmax[1] >= gate.mins[1]
+                && pmin[2] <= gate.maxs[2] && pmax[2] >= gate.mins[2];
+            if !overlaps {
+                continue;
+            }
+            match gate.kind {
+                RaceGateKind::Start => {
+                    if !self.race.running {
+                        self.race.running = true;
+                        self.race.ticks = 0;
+                        self.race.next_checkpoint = 0;
+                        self.race.splits.clear();
+                    }
+                }
+                RaceGateKind::Checkpoint => {
+                    // Must be the next checkpoint in sequence.
+                    if self.race.running && i <= self.race.gates.len() {
+                        // Determine how many checkpoints have been passed.
+                        // We use `self.race.next_checkpoint` as the count.
+                        let cp_positions: Vec<usize> = self
+                            .race
+                            .gates
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, g)| g.kind == RaceGateKind::Checkpoint)
+                            .map(|(idx, _)| idx)
+                            .collect();
+                        if let Some(pos) = cp_positions.iter().position(|&idx| idx == i) {
+                            if pos == self.race.next_checkpoint {
+                                self.race.splits.push(self.race.ticks);
+                                self.race.next_checkpoint += 1;
+                            }
+                        }
+                    }
+                }
+                RaceGateKind::Finish => {
+                    if self.race.running {
+                        self.race.finished_ticks = Some(self.race.ticks);
+                        self.race.finished = true;
+                        self.race.running = false;
+                    }
+                }
+            }
+        }
     }
 
     /// Held-button state, set by the JS side each frame.
@@ -126,4 +246,24 @@ impl Session {
     pub fn on_ground(&self) -> bool { self.ps.on_ground }
     pub fn origin(&self) -> [f32; 3] { self.ps.origin }
     pub fn velocity(&self) -> [f32; 3] { self.ps.velocity }
+
+    // Race state getters.
+    pub fn race_running(&self) -> bool { self.race.running }
+    pub fn race_finished(&self) -> bool { self.race.finished }
+    /// Elapsed race ticks (convert to ms with * 1000 / TICK_RATE).
+    pub fn race_ticks(&self) -> u32 { self.race.ticks }
+    /// Final race time in ticks, if finished.
+    pub fn race_finished_ticks(&self) -> Option<u32> { self.race.finished_ticks }
+    /// Number of checkpoints passed (split count).
+    pub fn race_split_count(&self) -> usize { self.race.splits.len() }
+    /// Split times (ticks) for each passed checkpoint.
+    pub fn race_splits(&self) -> Vec<u32> { self.race.splits.clone() }
+    /// Total number of checkpoints on this map.
+    pub fn race_total_checkpoints(&self) -> usize {
+        self.race
+            .gates
+            .iter()
+            .filter(|g| g.kind == RaceGateKind::Checkpoint)
+            .count()
+    }
 }
