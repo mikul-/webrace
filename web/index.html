@@ -14,6 +14,16 @@
         font: 13px/1.5 ui-monospace, monospace;
         overflow: hidden;
       }
+      #version {
+        position: fixed;
+        bottom: 0;
+        right: 0;
+        padding: 2px 6px;
+        color: #fff;
+        background: #7a2fa0;
+        font-size: 11px;
+        z-index: 99;
+      }
       canvas {
         display: block;
         width: 100vw;
@@ -95,6 +105,7 @@
   </head>
   <body>
     <canvas id="view"></canvas>
+    <div id="version">BUILD v7 — vertex-fix + pointer-lock</div>
     <div id="hud"></div>
     <div id="fps"></div>
     <div id="speed"></div>

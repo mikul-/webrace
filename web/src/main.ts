@@ -15,6 +15,10 @@ const mapInput = document.getElementById("map") as HTMLInputElement;
 const playBtn = document.getElementById("play")!;
 const logEl = document.getElementById("log")!;
 const lockEl = document.getElementById("lock")!;
+// Show the unlock state immediately on load (pointerlockchange doesn't fire
+// until a lock attempt happens, so we initialize the label ourselves).
+lockEl.textContent = "🔓 click to lock mouse";
+lockEl.style.color = "#e8603a";
 const canvas = document.getElementById("view") as HTMLCanvasElement;
 
 let renderer: Renderer | null = null;
@@ -115,21 +119,22 @@ function setupResize() {
 
 function lockPointer() {
   const el = canvas as HTMLCanvasElement & {
-    requestPointerLock: (opts?: { unadjustedMovement: boolean }) => void | Promise<void>;
+    requestPointerLock: () => void;
   };
-  if (typeof el.requestPointerLock !== "function") return;
+  if (typeof el.requestPointerLock !== "function") {
+    lockEl.textContent = "browser does not support pointer lock";
+    return;
+  }
   try {
-    const r = el.requestPointerLock({ unadjustedMovement: true });
-    if (r && typeof (r as Promise<void>).catch === "function") {
-      (r as Promise<void>).catch(() => {});
-    }
-  } catch {
     el.requestPointerLock();
+  } catch (e) {
+    lockEl.textContent = "lock failed: " + (e as Error).message;
   }
 }
 
 canvas.addEventListener("click", () => {
   if (overlay.classList.contains("hidden") && document.pointerLockElement !== canvas) {
+    lockEl.textContent = "requesting pointer lock…";
     lockPointer();
   }
 });
@@ -137,8 +142,14 @@ canvas.addEventListener("click", () => {
 // Also allow clicking anywhere (HUD elements are pointer-events:none).
 document.addEventListener("click", () => {
   if (overlay.classList.contains("hidden") && document.pointerLockElement !== canvas) {
+    lockEl.textContent = "requesting pointer lock…";
     lockPointer();
   }
+});
+
+document.addEventListener("pointerlockerror", () => {
+  lockEl.textContent = "🔓 pointer lock refused by browser";
+  lockEl.style.color = "#e8603a";
 });
 
 document.addEventListener("pointerlockchange", () => {
