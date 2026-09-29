@@ -570,7 +570,9 @@ impl Pmove {
     }
 
     /// Attempt an 18-unit stair-step (Quake PM_StepSlideMove). Returns true if
-    /// a step was performed.
+    /// a step was performed. Only fires when grounded and when the forward
+    /// step actually makes meaningful progress (so running into a tall wall
+    /// does not slowly "climb" it).
     fn try_step_up(
         &mut self,
         ps: &mut PlayerState,
@@ -579,6 +581,12 @@ impl Pmove {
         maxs: [f32; 3],
         _end: [f32; 3],
     ) -> bool {
+        // Only step when on the ground (not while pressed against a wall in
+        // the air).
+        if !ps.on_ground {
+            return false;
+        }
+
         let step = 18.0;
         let up_pos = [start[0], start[1], start[2] + step];
         let up_tr = self.world.trace(start, mins, maxs, up_pos);
@@ -591,7 +599,9 @@ impl Pmove {
             up_pos[2],
         ];
         let fwd_tr = self.world.trace(up_pos, mins, maxs, fwd_end);
-        if fwd_tr.fraction <= 0.0 {
+        // Require meaningful forward progress (> 0.5 of the intended move),
+        // otherwise we're just running into a tall wall.
+        if fwd_tr.fraction <= 0.5 {
             return false;
         }
         let at = [
@@ -601,7 +611,12 @@ impl Pmove {
         ];
         let down_end = [at[0], at[1], at[2] - step];
         let down_tr = self.world.trace(at, mins, maxs, down_end);
-        ps.origin = [at[0], at[1], at[2] - step * down_tr.fraction];
+        // The landing must be no higher than a valid step (don't climb walls).
+        let new_z = at[2] - step * down_tr.fraction;
+        if new_z > start[2] + step + 1.0 {
+            return false;
+        }
+        ps.origin = [at[0], at[1], new_z];
         if ps.velocity[2] < 0.0 {
             ps.velocity[2] = 0.0;
         }

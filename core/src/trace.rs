@@ -105,7 +105,11 @@ impl World {
                     + delta[1] * n[1]
                     + delta[2] * n[2];
 
-                if start_dist > 0.0 {
+                // Strictly inside = on the solid side (start_dist < 0). A box
+                // merely *touching* a plane (start_dist == 0) is on the
+                // surface, not inside — this prevents resting-on-floor from
+                // being misreported as start_solid.
+                if start_dist >= 0.0 {
                     inside_all = false;
                 }
                 if start_dist < deepest {
@@ -156,7 +160,9 @@ impl World {
             }
 
             if enter > f32::NEG_INFINITY && enter < exit {
-                if enter <= 0.0 {
+                if enter < 0.0 {
+                    // The box was already inside this brush before the sweep
+                    // began (entered at negative t) — genuinely embedded.
                     start_solid = true;
                     if best_frac > 0.0 {
                         best_frac = 0.0;
