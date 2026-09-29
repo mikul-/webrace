@@ -86,6 +86,15 @@ async function loadMap() {
       idxCount,
     );
 
+    // Upload the lightmap atlas.
+    renderer.uploadLightmap(
+      memory,
+      core.bsp_lightmap_ptr(mapId),
+      core.bsp_lightmap_len(mapId),
+      core.bsp_lightmap_w(mapId),
+      core.bsp_lightmap_h(mapId),
+    );
+
     // Create a playable session at spawn point 0.
     if (sessionId !== null) core.session_drop(sessionId);
     sessionId = core.session_new(mapId, 0);

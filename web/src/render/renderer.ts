@@ -10,6 +10,7 @@ export class Renderer {
   private ibo: WebGLBuffer;
   private indexCount = 0;
   private uProjView: WebGLUniformLocation;
+  private lightmapTex: WebGLTexture;
 
   constructor(canvas: HTMLCanvasElement) {
     const gl = canvas.getContext("webgl2", {
@@ -36,13 +37,16 @@ export class Renderer {
     const fs = `#version 300 es
       precision highp float;
       in vec2 v_uv; in vec2 v_lm; in vec3 v_norm; in vec4 v_color;
+      uniform sampler2D u_lightmap;
       out vec4 outColor;
       void main() {
-        // Solid-ish lighting from vertex color (lightgrid) + normal shading.
-        vec3 n = normalize(v_norm);
-        vec3 sun = normalize(vec3(0.3, 0.7, 0.6));
-        float diff = max(dot(n, sun), 0.0);
-        vec3 base = v_color.rgb * (0.35 + 0.65 * diff);
+        // Baked lightmap provides the actual lighting (soft shadows, AO).
+        // Multiply by vertex color (identity for most surfaces) and scale up
+        // ~2x since lightmaps are stored dark (16-step quantization).
+        vec3 lm = texture(u_lightmap, v_lm).rgb;
+        vec3 base = lm * v_color.rgb * 2.0;
+        // Clamp and add slight gamma-ish lift so dark corners are readable.
+        base = base / (base + vec3(1.0));
         outColor = vec4(base, 1.0);
       }`;
 
@@ -50,6 +54,17 @@ export class Renderer {
     gl.useProgram(this.program);
 
     this.uProjView = gl.getUniformLocation(this.program, "u_proj_view")!;
+    const uLightmap = gl.getUniformLocation(this.program, "u_lightmap");
+    if (uLightmap) gl.uniform1i(uLightmap, 0);
+
+    // Lightmap atlas texture (unit 0).
+    this.lightmapTex = gl.createTexture()!;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.lightmapTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
     this.vao = gl.createVertexArray()!;
     this.vbo = gl.createBuffer()!;
@@ -118,6 +133,16 @@ export class Renderer {
     const idx = new Uint32Array(memory.buffer, idxPtr, idxCount);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
     this.indexCount = idxCount;
+  }
+
+  /** Upload the packed RGB lightmap atlas (from WASM memory). */
+  uploadLightmap(memory: WebAssembly.Memory, ptr: number, len: number, w: number, h: number) {
+    const gl = this.gl;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.lightmapTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    const data = new Uint8Array(memory.buffer, ptr, len);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, w, h, 0, gl.RGB, gl.UNSIGNED_BYTE, data);
   }
 
   resize(w: number, h: number) {

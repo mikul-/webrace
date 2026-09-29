@@ -18,13 +18,14 @@
 const IDENT_IBSP: u32 = 0x5053_4249; // "IBSP"
 const LUMP_ENTITIES: usize = 0;
 const LUMP_SHADERREFS: usize = 1;
+const LUMP_PLANES: usize = 2;
 const LUMP_VERTEXES: usize = 10;
 const LUMP_ELEMENTS: usize = 11;
 const LUMP_FACES: usize = 13;
 const LUMP_MODELS: usize = 7;
 const LUMP_BRUSHES: usize = 8;
 const LUMP_BRUSHSIDES: usize = 9;
-const LUMP_PLANES: usize = 2;
+const LUMP_LIGHTING: usize = 14;
 
 pub const MAX_LUMPS: usize = 18;
 
@@ -44,11 +45,16 @@ pub const FACETYPE_TRISURF: i32 = 3;
 
 const CONTENTS_SOLID: i32 = 1;
 
+pub const LIGHTMAP_W: usize = 128;
+pub const LIGHTMAP_H: usize = 128;
+pub const LIGHTMAP_BYTES: usize = 3;
+
 /// A parsed map. Holds everything needed for both rendering and collision.
 pub struct Bsp {
     pub name: String,
     /// Render-space triangle soup (x, y, z, u, v, lm_u, lm_v, nx, ny, nz, r, g, b, a)
-    /// for every drawable face. `indices` indexes into it.
+    /// for every drawable face. `indices` indexes into it. `lm_u`/`lm_v` are
+    /// atlas-space lightmap UVs (0..1) once `lightmap_atlas` is built.
     pub positions: Vec<f32>,
     pub indices: Vec<u32>,
     /// Per-surface material slot (index into `shaders`).
@@ -61,6 +67,12 @@ pub struct Bsp {
     pub planes: Vec<Plane>,
     pub shaders: Vec<String>,
     pub spawns: Vec<SpawnPoint>,
+    /// Individual lightmap images (each LIGHTMAP_W×LIGHTMAP_H×3 bytes).
+    pub lightmaps: Vec<Vec<u8>>,
+    /// Packed lightmap atlas (RGB), and its width/height in pixels.
+    pub lightmap_atlas: Vec<u8>,
+    pub lightmap_atlas_w: u32,
+    pub lightmap_atlas_h: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -105,11 +117,13 @@ impl Bsp {
 
         let shaders = parse_shaders(data, &lumps[LUMP_SHADERREFS])?;
         let planes = parse_planes(data, &lumps[LUMP_PLANES]);
+        let lightmaps = parse_lightmaps(data, &lumps[LUMP_LIGHTING]);
         let (positions, indices, surface_shader) =
-            parse_drawable(data, &lumps, &shaders)?;
+            parse_drawable(data, &lumps, &shaders, &lightmaps)?;
         let (brush_plane_offsets, brush_plane_count, brush_plane_ids) =
             parse_brushes(data, &lumps)?;
         let spawns = parse_spawns(data, &lumps[LUMP_ENTITIES]);
+        let (lightmap_atlas, atlas_w, atlas_h) = build_lightmap_atlas(&lightmaps);
 
         Ok(Bsp {
             name: name.to_string(),
@@ -122,6 +136,10 @@ impl Bsp {
             planes,
             shaders,
             spawns,
+            lightmaps,
+            lightmap_atlas,
+            lightmap_atlas_w: atlas_w,
+            lightmap_atlas_h: atlas_h,
         })
     }
 
@@ -162,10 +180,46 @@ fn parse_planes(data: &[u8], lump: &(u32, u32)) -> Vec<Plane> {
     out
 }
 
+/// Split the LIGHTING lump into individual 128×128×3 lightmap images.
+fn parse_lightmaps(data: &[u8], lump: &(u32, u32)) -> Vec<Vec<u8>> {
+    let (off, len) = *lump;
+    let per = LIGHTMAP_W * LIGHTMAP_H * LIGHTMAP_BYTES;
+    let n = len as usize / per;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let s = off as usize + i * per;
+        out.push(data[s..s + per].to_vec());
+    }
+    out
+}
+
+/// Pack all lightmaps into a single RGB atlas (grid of LIGHTMAP_W cells).
+fn build_lightmap_atlas(lightmaps: &[Vec<u8>]) -> (Vec<u8>, u32, u32) {
+    let cols = 4usize;
+    let rows = lightmaps.len().div_ceil(cols).max(1);
+    let w = cols * LIGHTMAP_W;
+    let h = rows * LIGHTMAP_H;
+    let mut atlas = vec![0u8; w * h * LIGHTMAP_BYTES];
+    for (i, lm) in lightmaps.iter().enumerate() {
+        let col = i % cols;
+        let row = i / cols;
+        let ox = col * LIGHTMAP_W;
+        let oy = row * LIGHTMAP_H;
+        for y in 0..LIGHTMAP_H {
+            let dst = ((oy + y) * w + ox) * LIGHTMAP_BYTES;
+            let src = y * LIGHTMAP_W * LIGHTMAP_BYTES;
+            atlas[dst..dst + LIGHTMAP_W * LIGHTMAP_BYTES]
+                .copy_from_slice(&lm[src..src + LIGHTMAP_W * LIGHTMAP_BYTES]);
+        }
+    }
+    (atlas, w as u32, h as u32)
+}
+
 fn parse_drawable(
     data: &[u8],
     lumps: &[(u32, u32)],
     shaders: &[String],
+    lightmaps: &[Vec<u8>],
 ) -> Result<(Vec<f32>, Vec<u32>, Vec<i32>), String> {
     let (voff, vlen) = lumps[LUMP_VERTEXES];
     let (eoff, _elen) = lumps[LUMP_ELEMENTS];
@@ -174,13 +228,12 @@ fn parse_drawable(
     let nverts = vlen as usize / DVERTEX_SIZE;
     let nfaces = flen as usize / DFACE_SIZE;
 
-    // Pre-transform vertices to render space once.
-    let mut rv = Vec::with_capacity(nverts * 12);
+    // Read raw vertex data once.
+    // raw_v[vi] = (x, y, z, tu, tv, lu, lv, nx, ny, nz, r, g, b, a)
+    let mut raw_v: Vec<[f32; 14]> = Vec::with_capacity(nverts);
     for vi in 0..nverts {
         let p = voff as usize + vi * DVERTEX_SIZE;
-        let x = read_f32(data, p);
-        let y = read_f32(data, p + 4);
-        let z = read_f32(data, p + 8);
+        let (x, y, z) = (read_f32(data, p), read_f32(data, p + 4), read_f32(data, p + 8));
         // dvertex_t: point[3](0-11) tex_st[2](12-19) lm_st[2](20-27)
         //           normal[3](28-39) color[4]u8(40-43)
         let (tu, tv) = (read_f32(data, p + 12), read_f32(data, p + 16));
@@ -192,11 +245,12 @@ fn parse_drawable(
             data[p + 42] as f32 / 255.0,
             data[p + 43] as f32 / 255.0,
         );
-        // q2t = (x, z, -y)
-        rv.extend_from_slice(&[x, z, -y, tu, tv, lu, lv, nx, nz, -ny, r, g, b, a]);
+        raw_v.push([x, y, z, tu, tv, lu, lv, nx, ny, nz, r, g, b, a]);
     }
 
-    // Emit indices and surface shader per triangle.
+    // To give each face its own lightmap UVs, we emit per-face vertices
+    // (de-indexed). Small maps make this cheap.
+    let mut rv: Vec<f32> = Vec::with_capacity(nverts * 14);
     let mut indices: Vec<u32> = Vec::new();
     let mut surface_shader: Vec<i32> = Vec::new();
 
@@ -207,6 +261,10 @@ fn parse_drawable(
         let firstvert = read_i32(data, f + 12) as usize;
         let firstelem = read_i32(data, f + 20) as usize;
         let numelems = read_i32(data, f + 24) as usize;
+        // Lightmap region for this face.
+        let lm_texnum = read_i32(data, f + 28);
+        let lm_ox = read_i32(data, f + 32) as f32;
+        let lm_oy = read_i32(data, f + 36) as f32;
 
         if facetype != FACETYPE_PLANAR && facetype != FACETYPE_TRISURF {
             continue;
@@ -219,16 +277,56 @@ fn parse_drawable(
             continue;
         }
 
+        // Atlas placement of this lightmap image (grid of LIGHTMAP_W cells).
+        let lm_count = lightmaps.len().max(1);
+        let atlas_cols = 4usize; // 4 x 128 = 512 wide
+        let (atlas_x, atlas_y) = lightmap_atlas_origin(lm_texnum, atlas_cols);
+
+        // Collect this face's vertex indices (element indices reference
+        // firstvert..firstvert+numverts), then emit de-indexed vertices.
+        let mut face_vert_indices: Vec<usize> = Vec::new();
         for e in 0..numelems {
             let ei = eoff as usize + (firstelem + e) * 4;
             let raw = read_i32(data, ei);
-            let idx = (raw + firstvert as i32) as u32;
-            indices.push(idx);
+            face_vert_indices.push((raw + firstvert as i32) as usize);
         }
+
+        for &vi in &face_vert_indices {
+            let v = raw_v[vi];
+            // Lightmap UV (pixels within the 128x128 lightmap) + this face's
+            // offset, then scaled into atlas [0..1] space.
+            let lu = v[5] + lm_ox;
+            let lv = v[6] + lm_oy;
+            let au = (atlas_x as f32 + lu) / ((atlas_cols * LIGHTMAP_W) as f32);
+            let av = (atlas_y as f32 + lv) / (lightmap_atlas_rows(lm_count, atlas_cols) as f32 * LIGHTMAP_H as f32);
+            // q2t = (x, z, -y); 14 floats per vertex:
+            // pos(3) tex(2) lm(2) normal(3) color(4)
+            rv.extend_from_slice(&[
+                v[0], v[2], -v[1],   // pos
+                v[3], v[4],          // tex uv
+                au, av,              // lightmap atlas uv
+                v[7], v[9], -v[8],   // normal (q2t)
+                v[10], v[11], v[12], v[13], // r,g,b,a
+            ]);
+        }
+        // Record base index for this face.
+        let base = indices.len() as u32;
+        indices.extend((0..numelems as u32).map(|i| base + i));
         surface_shader.push(shadernum);
     }
 
     Ok((rv, indices, surface_shader))
+}
+
+fn lightmap_atlas_origin(lm_texnum: i32, atlas_cols: usize) -> (usize, usize) {
+    let idx = lm_texnum.max(0) as usize;
+    let col = idx % atlas_cols;
+    let row = idx / atlas_cols;
+    (col * LIGHTMAP_W, row * LIGHTMAP_H)
+}
+
+fn lightmap_atlas_rows(lm_count: usize, atlas_cols: usize) -> usize {
+    lm_count.div_ceil(atlas_cols).max(1)
 }
 
 fn parse_brushes(

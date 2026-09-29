@@ -79,6 +79,32 @@ pub fn bsp_brush_count(id: usize) -> usize {
     })
 }
 
+/// Byte offset into WASM memory of the packed RGB lightmap atlas.
+#[wasm_bindgen]
+pub fn bsp_lightmap_ptr(id: usize) -> usize {
+    MAPS.with(|m| {
+        m.borrow()
+            .get(id)
+            .map(|b| b.lightmap_atlas.as_ptr() as usize)
+            .unwrap_or(0)
+    })
+}
+
+#[wasm_bindgen]
+pub fn bsp_lightmap_len(id: usize) -> usize {
+    MAPS.with(|m| m.borrow().get(id).map(|b| b.lightmap_atlas.len()).unwrap_or(0))
+}
+
+#[wasm_bindgen]
+pub fn bsp_lightmap_w(id: usize) -> u32 {
+    MAPS.with(|m| m.borrow().get(id).map(|b| b.lightmap_atlas_w).unwrap_or(0))
+}
+
+#[wasm_bindgen]
+pub fn bsp_lightmap_h(id: usize) -> u32 {
+    MAPS.with(|m| m.borrow().get(id).map(|b| b.lightmap_atlas_h).unwrap_or(0))
+}
+
 /// Completely drop all loaded maps and reset the thread-local store.
 #[wasm_bindgen]
 pub fn bsp_release_all() {

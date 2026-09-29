@@ -60,10 +60,12 @@ impl Default for Angles {
 
 impl Angles {
     pub fn add_mouse(&mut self, dx: f32, dy: f32, cfg: &MouseConfig) {
-        // Warfork/Quake: yaw decreases with +dx (turn right), pitch decreases
-        // with +dy (look down). Both scaled by sensitivity * m_*.
-        self.yaw_frac -= dx * cfg.sensitivity * cfg.m_yaw;
-        self.pitch_frac -= dy * cfg.sensitivity * cfg.m_pitch;
+        // Warfork/Quake: m_yaw/m_pitch are degrees per mouse-count (0.022°).
+        // Convert degrees -> 65536-unit circle (ANGLE_2_PI / 360 = 182.04…).
+        // yaw decreases with +dx (turn right), pitch decreases with +dy (down).
+        const DEG_TO_ANGLE: f32 = ANGLE_2_PI / 360.0;
+        self.yaw_frac -= dx * cfg.sensitivity * cfg.m_yaw * DEG_TO_ANGLE;
+        self.pitch_frac -= dy * cfg.sensitivity * cfg.m_pitch * DEG_TO_ANGLE;
     }
 
     pub fn quantize(&mut self, out_yaw: &mut u16, out_pitch: &mut u16) {
