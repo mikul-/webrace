@@ -1,0 +1,11 @@
+/node_modules/
+/dist/
+/target/
+**/target/
+*.wasm
+.DS_Store
+*.local
+.env
+/maps/*.bsp
+/maps/*.pk3
+core/pkg/
