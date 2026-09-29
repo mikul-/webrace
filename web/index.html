@@ -116,7 +116,11 @@
         content: "";
         position: absolute;
         background: #fa00ff;
-        box-shadow: 0 0 1px #000, 0 0 1px #000;
+        /* 1px black outline around the crosshair lines. */
+        box-shadow:
+          0 0 0 1px #000,
+          0 0 1px #000,
+          0 0 1px #000;
       }
       #crosshair::before {
         left: 50%;
