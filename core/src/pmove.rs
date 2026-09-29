@@ -540,9 +540,8 @@ impl Pmove {
         ps.velocity[2] = zspeed;
     }
 
-    /// Slide the player along the world, resolving collision with stair-step
-    /// support (Quake PM_StepSlideMove): a single trace + plane clip, and if
-    /// blocked, an 18-unit step-up attempt.
+    /// Slide the player along the world. First tries stair-stepping; otherwise
+    /// performs Quake-style PM_SlideMove (multi-pass plane clipping).
     fn slide_move(&mut self, ps: &mut PlayerState) {
         let mins = crate::trace::PLAYER_MINS;
         let maxs = crate::trace::PLAYER_MAXS;
@@ -555,66 +554,134 @@ impl Pmove {
         ];
 
         let tr = self.world.trace(start, mins, maxs, end);
-
         if tr.fraction >= 1.0 {
             ps.origin = end;
             return;
         }
 
-        // Blocked. Try stepping up (18 units, Quake default) if moving mostly
-        // horizontally.
-        let step = 18.0;
+        // Blocked — try stair-stepping if moving mostly horizontally.
         let horizontal =
             (ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]).sqrt();
-        if horizontal > 1.0 {
-            // Move up, then forward horizontally, then drop back down.
-            let up_pos = [start[0], start[1], start[2] + step];
-            let up_tr = self.world.trace(start, mins, maxs, up_pos);
-            if up_tr.fraction >= 1.0 {
-                let fwd_end = [
-                    up_pos[0] + ps.velocity[0] * self.frametime,
-                    up_pos[1] + ps.velocity[1] * self.frametime,
-                    up_pos[2],
-                ];
-                let fwd_tr = self.world.trace(up_pos, mins, maxs, fwd_end);
-                if fwd_tr.fraction > 0.0 {
-                    let at = [
-                        up_pos[0] + (fwd_end[0] - up_pos[0]) * fwd_tr.fraction,
-                        up_pos[1] + (fwd_end[1] - up_pos[1]) * fwd_tr.fraction,
-                        up_pos[2],
-                    ];
-                    // Drop down to find the landing height.
-                    let down_end = [at[0], at[1], at[2] - step];
-                    let down_tr = self.world.trace(at, mins, maxs, down_end);
-                    ps.origin = [
-                        at[0],
-                        at[1],
-                        at[2] - step * down_tr.fraction,
-                    ];
-                    if ps.velocity[2] < 0.0 {
-                        ps.velocity[2] = 0.0;
-                    }
-                    return;
+        if horizontal > 1.0 && self.try_step_up(ps, start, mins, maxs, end) {
+            return;
+        }
+
+        self.slide_clip(ps, start, tr, mins, maxs);
+    }
+
+    /// Attempt an 18-unit stair-step (Quake PM_StepSlideMove). Returns true if
+    /// a step was performed.
+    fn try_step_up(
+        &mut self,
+        ps: &mut PlayerState,
+        start: [f32; 3],
+        mins: [f32; 3],
+        maxs: [f32; 3],
+        _end: [f32; 3],
+    ) -> bool {
+        let step = 18.0;
+        let up_pos = [start[0], start[1], start[2] + step];
+        let up_tr = self.world.trace(start, mins, maxs, up_pos);
+        if up_tr.fraction < 1.0 {
+            return false;
+        }
+        let fwd_end = [
+            up_pos[0] + ps.velocity[0] * self.frametime,
+            up_pos[1] + ps.velocity[1] * self.frametime,
+            up_pos[2],
+        ];
+        let fwd_tr = self.world.trace(up_pos, mins, maxs, fwd_end);
+        if fwd_tr.fraction <= 0.0 {
+            return false;
+        }
+        let at = [
+            up_pos[0] + (fwd_end[0] - up_pos[0]) * fwd_tr.fraction,
+            up_pos[1] + (fwd_end[1] - up_pos[1]) * fwd_tr.fraction,
+            up_pos[2],
+        ];
+        let down_end = [at[0], at[1], at[2] - step];
+        let down_tr = self.world.trace(at, mins, maxs, down_end);
+        ps.origin = [at[0], at[1], at[2] - step * down_tr.fraction];
+        if ps.velocity[2] < 0.0 {
+            ps.velocity[2] = 0.0;
+        }
+        true
+    }
+
+    /// Quake PM_SlideMove: clip velocity against hit planes, re-tracing the
+    /// leftover movement, up to MAX_CLIP_PLANES (5) passes, so the player
+    /// slides along walls and into corners without sticking.
+    #[allow(unused_assignments)]
+    fn slide_clip(
+        &mut self,
+        ps: &mut PlayerState,
+        start: [f32; 3],
+        _first_tr: crate::trace::TraceResult,
+        mins: [f32; 3],
+        maxs: [f32; 3],
+    ) {
+        const MAX_CLIP_PLANES: usize = 5;
+        let mut planes: [[f32; 3]; MAX_CLIP_PLANES] = [[0.0; 3]; MAX_CLIP_PLANES];
+        let mut num_planes = 0;
+
+        // Remaining displacement starts as the full tick's movement.
+        let mut remaining = [
+            ps.velocity[0] * self.frametime,
+            ps.velocity[1] * self.frametime,
+            ps.velocity[2] * self.frametime,
+        ];
+        let mut cur = start;
+
+        for _pass in 0..MAX_CLIP_PLANES {
+            let target = [cur[0] + remaining[0], cur[1] + remaining[1], cur[2] + remaining[2]];
+            let tr = self.world.trace(cur, mins, maxs, target);
+
+            if tr.fraction >= 1.0 {
+                cur = target;
+                break;
+            }
+
+            // Advance up to the impact + epsilon.
+            let n = tr.normal;
+            let eps = 0.05;
+            cur = [
+                cur[0] + remaining[0] * tr.fraction + n[0] * eps,
+                cur[1] + remaining[1] * tr.fraction + n[1] * eps,
+                cur[2] + remaining[2] * tr.fraction + n[2] * eps,
+            ];
+
+            // Reject planes already clipped against (avoid oscillation).
+            let mut skip = false;
+            for p in 0..num_planes {
+                let d = planes[p][0] * n[0] + planes[p][1] * n[1] + planes[p][2] * n[2];
+                if d > 0.99 {
+                    skip = true;
+                    break;
                 }
             }
+            if skip {
+                break;
+            }
+            planes[num_planes] = n;
+            num_planes += 1;
+
+            // Clip the velocity against this plane.
+            let dot = ps.velocity[0] * n[0] + ps.velocity[1] * n[1] + ps.velocity[2] * n[2];
+            if dot < 0.0 {
+                ps.velocity[0] -= n[0] * dot;
+                ps.velocity[1] -= n[1] * dot;
+                ps.velocity[2] -= n[2] * dot;
+            }
+
+            // Remaining movement uses the (clipped) velocity for the rest.
+            remaining = [
+                ps.velocity[0] * self.frametime * (1.0 - tr.fraction),
+                ps.velocity[1] * self.frametime * (1.0 - tr.fraction),
+                ps.velocity[2] * self.frametime * (1.0 - tr.fraction),
+            ];
         }
 
-        // Ordinary slide: move to impact + clip.
-        let n = tr.normal;
-        let eps = 0.05;
-        let end2 = [
-            start[0] + (end[0] - start[0]) * tr.fraction + n[0] * eps,
-            start[1] + (end[1] - start[1]) * tr.fraction + n[1] * eps,
-            start[2] + (end[2] - start[2]) * tr.fraction + n[2] * eps,
-        ];
-        ps.origin = end2;
-
-        let dot = ps.velocity[0] * n[0] + ps.velocity[1] * n[1] + ps.velocity[2] * n[2];
-        if dot < 0.0 {
-            ps.velocity[0] -= n[0] * dot;
-            ps.velocity[1] -= n[1] * dot;
-            ps.velocity[2] -= n[2] * dot;
-        }
+        ps.origin = cur;
     }
 
     fn update_ground(&mut self, ps: &mut PlayerState) {
