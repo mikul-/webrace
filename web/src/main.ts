@@ -7,6 +7,7 @@ import { Renderer, perspective, lookAt, multiply } from "./render/renderer";
 import { fetchBsp } from "./sim/map";
 import { loadTexture } from "./render/textures";
 import { getIdentity, registerNickname, submitTime } from "./net/leaderboard";
+import { Menu } from "./ui/menu";
 import init, * as core from "../pkg/webrace_core.js";
 
 const overlay = document.getElementById("overlay")!;
@@ -30,6 +31,8 @@ let memory: WebAssembly.Memory | null = null;
 let sessionId: number | null = null;
 let currentMap = "";
 let submitGuard = false; // true once we've submitted the current finish
+let fov = 140; // horizontal FOV (updated by the settings menu)
+let menu: Menu | null = null;
 
 // Key state.
 const keys = { forward: false, back: false, left: false, right: false, jump: false, crouch: false, special: false };
@@ -52,6 +55,32 @@ async function main() {
     playBtn.addEventListener("click", () => void loadMap());
     mapInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") void loadMap();
+    });
+
+    // Settings menu.
+    menu = new Menu(
+      {
+        onFov: (v) => (fov = v),
+        onSensitivity: (s) => {
+          if (sessionId !== null) core.session_set_sensitivity(sessionId, s);
+        },
+      },
+      (open) => {
+        // Release pointer lock when opening the menu so the mouse is usable.
+        if (open && document.pointerLockElement === canvas) {
+          document.exitPointerLock?.();
+        }
+        // Clear held keys when toggling.
+        for (const k of Object.keys(keys) as (keyof typeof keys)[]) keys[k] = false;
+      },
+    );
+
+    // M toggles the menu.
+    window.addEventListener("keydown", (e) => {
+      if (e.code === "KeyM" && !e.repeat && menu) {
+        menu.setOpen(!menu.isOpen());
+        if (menu.isOpen() && currentMap) void menu.refreshLeaderboard(currentMap);
+      }
     });
 
     // Prefill nickname from stored identity.
@@ -150,6 +179,8 @@ async function loadMap() {
     // Create a playable session at spawn point 0.
     if (sessionId !== null) core.session_drop(sessionId);
     sessionId = core.session_new(mapId, 0);
+    // Apply saved sensitivity to the new session.
+    menu?.applyAll();
 
     overlay.classList.add("hidden");
     setStatus("");
@@ -304,7 +335,8 @@ function loop() {
   }
 
   // Step the sim at a fixed 250 Hz using an accumulator.
-  if (sessionId !== null) {
+  const menuOpen = menu?.isOpen() ?? false;
+  if (sessionId !== null && !menuOpen) {
     // process queued mouse + keys, then step the fixed-rate loop.
     let steps = 0;
     while (now - lastTick >= TICK_MS && steps < 8) {
@@ -360,8 +392,7 @@ function loop() {
     const aspect = canvas.width / canvas.height;
     // Quake FOV: the cvar is the HORIZONTAL fov; the vertical fov is derived
     // from the aspect ratio (tan(hfov/2) / aspect). Same model as Warfork/q3.
-    const HFOV_DEG = 140;
-    const hfov = (HFOV_DEG * Math.PI) / 180;
+    const hfov = (fov * Math.PI) / 180;
     const vfov = 2 * Math.atan(Math.tan(hfov / 2) / aspect);
     const proj = perspective(vfov, aspect, 8, 200000);
     const eye = core.session_eye(sessionId) as unknown as Float32Array;

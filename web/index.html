@@ -115,7 +115,7 @@
       #crosshair::after {
         content: "";
         position: absolute;
-        background: #fa00ff;
+        background: var(--xhair-color, #fa00ff);
         /* 1px black outline around the crosshair lines. */
         box-shadow:
           0 0 0 1px #000,
@@ -151,6 +151,88 @@
       #timer:empty {
         display: none;
       }
+      #menu {
+        position: fixed;
+        inset: 0;
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-start;
+        overflow-y: auto;
+        gap: 12px;
+        padding: 24px;
+        background: rgba(11, 13, 18, 0.95);
+        color: #cfd4dd;
+        font: 13px/1.5 ui-monospace, monospace;
+        z-index: 20;
+      }
+      #menu.open {
+        display: flex;
+      }
+      #menu h2 {
+        margin: 12px 0 4px;
+        color: #fa00ff;
+        font-size: 15px;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+      }
+      .menu-group {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        width: 360px;
+        max-width: 90vw;
+      }
+      .menu-group label {
+        color: #9aa3b2;
+        font-size: 12px;
+      }
+      .menu-group .val {
+        color: #fa00ff;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .row input[type="range"] {
+        flex: 1;
+      }
+      .row input[type="number"] {
+        width: 72px;
+        background: #11141c;
+        border: 1px solid #2a3040;
+        color: #cfd4dd;
+        padding: 4px 6px;
+        font: inherit;
+      }
+      .menu-group input[type="color"] {
+        width: 48px;
+        height: 28px;
+        background: #11141c;
+        border: 1px solid #2a3040;
+        cursor: pointer;
+        padding: 0;
+      }
+      .leaderboard {
+        width: 360px;
+        max-width: 90vw;
+        min-height: 40px;
+        white-space: pre;
+        font-variant-numeric: tabular-nums;
+        color: #9aa3b2;
+      }
+      .leaderboard .lb-row {
+        display: flex;
+        justify-content: space-between;
+      }
+      .leaderboard .lb-pos {
+        color: #fa00ff;
+        margin-right: 10px;
+      }
+      .menu-hint {
+        color: #5a6472;
+      }
     </style>
   </head>
   <body>
@@ -169,6 +251,36 @@
       <input id="map" placeholder="map name (e.g. bipracer3)" value="" />
       <button id="play">Play</button>
       <pre id="log"></pre>
+    </div>
+    <div id="menu">
+      <h2>Settings</h2>
+      <div class="menu-group">
+        <label>FOV <span id="fov-value" class="val"></span></label>
+        <div class="row">
+          <input type="range" id="fov-slider" min="60" max="160" step="1" />
+          <input type="number" id="fov-input" min="60" max="160" step="1" />
+        </div>
+      </div>
+      <div class="menu-group">
+        <label>Sensitivity <span id="sens-value" class="val"></span></label>
+        <div class="row">
+          <input type="range" id="sens-slider" min="0.1" max="50" step="0.01" />
+          <input type="number" id="sens-input" min="0.1" max="50" step="0.01" />
+        </div>
+      </div>
+      <div class="menu-group">
+        <label>Crosshair color</label>
+        <input type="color" id="xhair-color" />
+      </div>
+      <div class="menu-group">
+        <label>Crosshair size <span id="xhair-size-value" class="val"></span></label>
+        <div class="row">
+          <input type="range" id="xhair-size" min="4" max="64" step="1" />
+        </div>
+      </div>
+      <h2>Leaderboard</h2>
+      <div id="leaderboard" class="leaderboard"></div>
+      <p class="menu-hint">M to close</p>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
