@@ -4,6 +4,8 @@ pub mod bsp;
 pub mod bindings;
 pub mod input;
 pub mod pmove;
+pub mod session;
+pub mod sim;
 pub mod trace;
 
 use wasm_bindgen::prelude::*;

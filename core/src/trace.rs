@@ -54,7 +54,7 @@ impl World {
         let mut best_frac = 1.0f32;
         let mut best_normal = [0.0f32; 3];
         let mut start_solid = false;
-        let mut all_solid = true;
+        let all_solid = true;
 
         let delta = [
             end[0] - start[0],
@@ -62,79 +62,83 @@ impl World {
             end[2] - start[2],
         ];
 
+        // Box center offset (mins/maxs are relative to `start`) and half-extents.
+        let center_off = [
+            (mins[0] + maxs[0]) * 0.5,
+            (mins[1] + maxs[1]) * 0.5,
+            (mins[2] + maxs[2]) * 0.5,
+        ];
+        let half_ext = [
+            (maxs[0] - mins[0]) * 0.5,
+            (maxs[1] - mins[1]) * 0.5,
+            (maxs[2] - mins[2]) * 0.5,
+        ];
+        let c0 = [
+            start[0] + center_off[0],
+            start[1] + center_off[1],
+            start[2] + center_off[2],
+        ];
+
         for i in 0..self.brush_plane_offsets.len() {
             let offset = self.brush_plane_offsets[i] as usize;
             let count = self.brush_plane_count[i] as usize;
 
-            // Point to test: the AABB offsets give us the "hull clipping" —
-            // for each plane, offset the point that is most inside.
             let mut enter = -f32::INFINITY;
             let mut exit = f32::INFINITY;
             let mut enter_normal = [0.0f32; 3];
-            let mut brush_all_solid = true;
 
             for p in 0..count {
                 let pid = self.brush_plane_ids[offset + p] as usize;
                 let Some(plane) = self.planes.get(pid) else { continue };
                 let n = plane.normal;
 
-                // Offset point for this plane (hull clipping clip point).
-                let clip = [
-                    if n[0] > 0.0 { maxs[0] } else { mins[0] },
-                    if n[1] > 0.0 { maxs[1] } else { mins[1] },
-                    if n[2] > 0.0 { maxs[2] } else { mins[2] },
-                ];
+                // Signed distance from box center to plane, minus box radius
+                // projected on the normal (support function).
+                let radius =
+                    half_ext[0] * n[0].abs() + half_ext[1] * n[1].abs() + half_ext[2] * n[2].abs();
                 let start_dist =
-                    clip[0] * n[0] + clip[1] * n[1] + clip[2] * n[2] - plane.dist;
-                let end_dist = start_dist + delta[0] * n[0] + delta[1] * n[1] + delta[2] * n[2];
+                    c0[0] * n[0] + c0[1] * n[1] + c0[2] * n[2] - plane.dist - radius;
+                let end_dist = start_dist
+                    + delta[0] * n[0]
+                    + delta[1] * n[1]
+                    + delta[2] * n[2];
 
-                if start_dist >= 0.0 {
-                    brush_all_solid = false;
-                }
-
+                // No crossing of this plane along the sweep: doesn't bound.
                 if start_dist > 0.0 && end_dist > 0.0 {
-                    // Entire motion stays outside this plane; brush can't be hit.
-                    enter = f32::INFINITY;
-                    exit = -f32::INFINITY;
-                    break;
+                    continue;
                 }
-
                 if start_dist < 0.0 && end_dist < 0.0 {
-                    // Both inside plane; doesn't bound the sweep.
+                    continue;
+                }
+                if start_dist == 0.0 && end_dist == 0.0 {
                     continue;
                 }
 
-                let t = start_dist / (start_dist - end_dist);
+                // Crossing (includes start_dist == 0 touching, and end == 0).
+                let denom = start_dist - end_dist;
+                let t = if denom.abs() < 1e-12 { 0.0 } else { start_dist / denom };
                 if start_dist > end_dist {
-                    // Entering the brush.
+                    // Entering the brush through this plane.
                     if t > enter {
                         enter = t;
                         enter_normal = n;
                     }
-                } else {
-                    // Exiting the brush.
-                    if t < exit {
-                        exit = t;
-                    }
+                } else if t < exit {
+                    exit = t;
                 }
             }
 
-            if enter == f32::INFINITY {
-                continue; // no intersection
-            }
-
-            let solid = !brush_all_solid || enter == -f32::INFINITY;
-            if solid {
-                all_solid = false;
-            }
-
-            if enter <= 0.0 && solid && !brush_all_solid {
-                start_solid = true;
-            }
-
-            if enter < best_frac && enter > 0.0 {
-                best_frac = enter;
-                best_normal = enter_normal;
+            if enter > f32::NEG_INFINITY && enter < exit {
+                if enter <= 0.0 {
+                    start_solid = true;
+                    if best_frac > 0.0 {
+                        best_frac = 0.0;
+                        best_normal = enter_normal;
+                    }
+                } else if enter < best_frac {
+                    best_frac = enter;
+                    best_normal = enter_normal;
+                }
             }
         }
 

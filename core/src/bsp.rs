@@ -60,12 +60,22 @@ pub struct Bsp {
     pub brush_plane_ids: Vec<u32>,
     pub planes: Vec<Plane>,
     pub shaders: Vec<String>,
+    pub spawns: Vec<SpawnPoint>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct Plane {
     pub normal: [f32; 3],
     pub dist: f32,
+}
+
+/// A player spawn point (from `info_player_start` / `info_player_deathmatch`).
+#[derive(Clone, Copy, Debug)]
+pub struct SpawnPoint {
+    /// Render-space origin (already `q2t = (x, z, -y)` transformed).
+    pub origin: [f32; 3],
+    /// Yaw in radians (from the entity `angle`, Quake convention).
+    pub yaw: f32,
 }
 
 impl Bsp {
@@ -86,7 +96,7 @@ impl Bsp {
         // Lump directory.
         let mut lumps = [(0u32, 0u32); MAX_LUMPS];
         let mut base = 8;
-        for (i, lump) in lumps.iter_mut().enumerate().take(MAX_LUMPS) {
+        for (_i, lump) in lumps.iter_mut().enumerate().take(MAX_LUMPS) {
             let off = read_u32(data, base);
             let len = read_u32(data, base + 4);
             *lump = (off, len);
@@ -99,6 +109,7 @@ impl Bsp {
             parse_drawable(data, &lumps, &shaders)?;
         let (brush_plane_offsets, brush_plane_count, brush_plane_ids) =
             parse_brushes(data, &lumps)?;
+        let spawns = parse_spawns(data, &lumps[LUMP_ENTITIES]);
 
         Ok(Bsp {
             name: name.to_string(),
@@ -110,6 +121,7 @@ impl Bsp {
             brush_plane_ids,
             planes,
             shaders,
+            spawns,
         })
     }
 
@@ -158,7 +170,7 @@ fn parse_drawable(
     shaders: &[String],
 ) -> Result<(Vec<f32>, Vec<u32>, Vec<i32>), String> {
     let (voff, vlen) = lumps[LUMP_VERTEXES];
-    let (eoff, elen) = lumps[LUMP_ELEMENTS];
+    let (eoff, _elen) = lumps[LUMP_ELEMENTS];
     let (foff, flen) = lumps[LUMP_FACES];
 
     let nverts = vlen as usize / DVERTEX_SIZE;
@@ -187,19 +199,16 @@ fn parse_drawable(
     // Emit indices and surface shader per triangle.
     let mut indices: Vec<u32> = Vec::new();
     let mut surface_shader: Vec<i32> = Vec::new();
-    let mut skipped_faces = 0usize;
 
     for fi in 0..nfaces {
         let f = foff as usize + fi * DFACE_SIZE;
         let shadernum = read_i32(data, f);
         let facetype = read_i32(data, f + 8);
         let firstvert = read_i32(data, f + 12) as usize;
-        let numverts = read_i32(data, f + 16) as usize;
         let firstelem = read_i32(data, f + 20) as usize;
         let numelems = read_i32(data, f + 24) as usize;
 
         if facetype != FACETYPE_PLANAR && facetype != FACETYPE_TRISURF {
-            skipped_faces += 1;
             continue;
         }
         let shader_name = shaders
@@ -207,22 +216,16 @@ fn parse_drawable(
             .map(|s| s.as_str())
             .unwrap_or("");
         if is_nodraw(shader_name) {
-            skipped_faces += 1;
             continue;
         }
 
         for e in 0..numelems {
             let ei = eoff as usize + (firstelem + e) * 4;
-            let raw = read_i32(data, ei) as i64;
-            let idx = (raw as i32 + firstvert as i32) as u32;
+            let raw = read_i32(data, ei);
+            let idx = (raw + firstvert as i32) as u32;
             indices.push(idx);
         }
         surface_shader.push(shadernum);
-        // Ensure indices stay within vertex range.
-        if indices.len() % 3 == 0 {
-            // noop; kept for clarity
-        }
-        let _ = numverts;
     }
 
     Ok((rv, indices, surface_shader))
@@ -273,6 +276,70 @@ fn parse_brushes(
     }
 
     Ok((offsets, counts, plane_ids))
+}
+
+/// Parse player spawn points from the entity lump (text key/value blocks).
+fn parse_spawns(data: &[u8], lump: &(u32, u32)) -> Vec<SpawnPoint> {
+    let (off, len) = *lump;
+    let text = String::from_utf8_lossy(&data[off as usize..(off + len) as usize]);
+    let mut out = Vec::new();
+
+    // Entities are `{ ... }` blocks of `"key" "value"` pairs.
+    for block in text.split('{').skip(1) {
+        let Some(_end) = block.find('}') else { continue };
+        let block = &block[..block.find('}').unwrap_or(block.len())];
+
+        let mut classname = None;
+        let mut origin: Option<[f32; 3]> = None;
+        let mut angle: f32 = 0.0;
+
+        let mut tokens: Vec<&str> = Vec::new();
+        for chunk in block.split('"') {
+            let c = chunk.trim();
+            if !c.is_empty() {
+                tokens.push(c);
+            }
+        }
+        let mut i = 0;
+        while i + 1 < tokens.len() {
+            let key = tokens[i];
+            let val = tokens[i + 1];
+            match key {
+                "classname" => classname = Some(val.to_string()),
+                "origin" => {
+                    let mut parts = val.split_whitespace();
+                    if let (Some(x), Some(y), Some(z)) = (
+                        parts.next().and_then(|s| s.parse().ok()),
+                        parts.next().and_then(|s| s.parse().ok()),
+                        parts.next().and_then(|s| s.parse().ok()),
+                    ) {
+                        origin = Some([x, y, z]);
+                    }
+                }
+                "angle" => {
+                    angle = val.trim().parse::<f32>().unwrap_or(0.0);
+                }
+                _ => {}
+            }
+            i += 2;
+        }
+
+        let is_spawn = matches!(
+            classname.as_deref(),
+            Some("info_player_start") | Some("info_player_deathmatch") | Some("info_player_intermission")
+        );
+        if is_spawn {
+            if let Some([x, y, z]) = origin {
+                // Quake -> render space: q2t = (x, z, -y)
+                let render = [x, z, -y];
+                // Quake "angle" is yaw in degrees, 0 = +X, positive turns CCW
+                // (viewed from +Z). Convert to radians; our yaw matches lookAt.
+                let yaw = -angle.to_radians();
+                out.push(SpawnPoint { origin: render, yaw });
+            }
+        }
+    }
+    out
 }
 
 /// Shaders matching these substrings are not drawn (same skip list as wf-tool).

@@ -31,6 +31,17 @@
         color: #9aa3b2;
         font-variant-numeric: tabular-nums;
       }
+      #speed {
+        position: fixed;
+        top: calc(50% + 40px);
+        left: 50%;
+        transform: translateX(-50%);
+        color: #ffb238;
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+        font-size: 24px;
+        opacity: 0.85;
+      }
       #overlay {
         position: fixed;
         inset: 0;
@@ -76,6 +87,7 @@
     <canvas id="view"></canvas>
     <div id="hud"></div>
     <div id="fps"></div>
+    <div id="speed"></div>
     <div id="overlay">
       <h1>webrace</h1>
       <p id="status">loading…</p>

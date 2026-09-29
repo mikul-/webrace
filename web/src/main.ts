@@ -1,5 +1,7 @@
-// Entrypoint: load WASM core, load a map, render it with a free camera.
-// Milestone 1 (scaffold + BSP renderer). Movement + multiplayer wire in next.
+// Entrypoint: load WASM core, load a map, and run a first-person
+// Warfork-style movement controller (pointer lock + WASD + jump/dash).
+//
+// Milestone 2: playable movement. Multiplayer + weapons wire in later.
 
 import { Renderer, perspective, lookAt, multiply } from "./render/renderer";
 import { fetchBsp } from "./sim/map";
@@ -8,6 +10,7 @@ import init, * as core from "../pkg/webrace_core.js";
 const overlay = document.getElementById("overlay")!;
 const statusEl = document.getElementById("status")!;
 const fpsEl = document.getElementById("fps")!;
+const speedEl = document.getElementById("speed")!;
 const mapInput = document.getElementById("map") as HTMLInputElement;
 const playBtn = document.getElementById("play")!;
 const logEl = document.getElementById("log")!;
@@ -15,6 +18,10 @@ const canvas = document.getElementById("view") as HTMLCanvasElement;
 
 let renderer: Renderer | null = null;
 let memory: WebAssembly.Memory | null = null;
+let sessionId: number | null = null;
+
+// Key state.
+const keys = { forward: false, back: false, left: false, right: false, jump: false, crouch: false, special: false };
 
 function setStatus(s: string) {
   statusEl.textContent = s;
@@ -54,43 +61,43 @@ async function loadMap() {
   try {
     const url = `/maps/${name}.bsp`;
     const bytes = await fetchBsp(url);
-    const id = core.bsp_parse(name, bytes);
+    const mapId = core.bsp_parse(name, bytes);
 
-    const vertCount = core.bsp_vertex_count(id);
-    const idxCount = core.bsp_index_count(id);
-    const triCount = core.bsp_triangle_count(id);
-    const brushCount = core.bsp_brush_count(id);
+    const vertCount = core.bsp_vertex_count(mapId);
+    const idxCount = core.bsp_index_count(mapId);
+    const triCount = core.bsp_triangle_count(mapId);
+    const brushCount = core.bsp_brush_count(mapId);
 
     if (!renderer) {
       renderer = new Renderer(canvas);
-      setupControls();
-      requestAnimationFrame((t) => loop(t));
+      setupResize();
     }
 
     renderer.uploadMap(
       memory,
-      core.bsp_vertices_ptr(id),
+      core.bsp_vertices_ptr(mapId),
       vertCount,
-      core.bsp_indices_ptr(id),
+      core.bsp_indices_ptr(mapId),
       idxCount,
     );
 
+    // Create a playable session at spawn point 0.
+    if (sessionId !== null) core.session_drop(sessionId);
+    sessionId = core.session_new(mapId, 0);
+
     overlay.classList.add("hidden");
+    lockPointer();
     setStatus("");
-    log(`${name}: ${triCount} tris, ${idxCount} indices, ${brushCount} brushes`);
+    log(`${name}: ${triCount} tris, ${brushCount} brushes — click to lock mouse`);
+    log("WASD move · SPACE jump · SHIFT/CTRL crouch · CLICK special (dash/walljump)");
+    requestAnimationFrame(loop);
   } catch (e) {
     setStatus(`load failed: ${(e as Error).message}`);
     log((e as Error).stack || String(e));
   }
 }
 
-// Free-fly camera for the scaffold milestone.
-const cam = { pos: [0, 0, 128] as [number, number, number], yaw: 0, pitch: 0 };
-let dragging = false;
-let lastX = 0;
-let lastY = 0;
-
-function setupControls() {
+function setupResize() {
   const update = () => {
     if (!renderer) return;
     canvas.width = canvas.clientWidth;
@@ -99,45 +106,122 @@ function setupControls() {
   };
   window.addEventListener("resize", update);
   update();
-  canvas.addEventListener("mousedown", (e) => {
-    dragging = true;
-    lastX = e.clientX;
-    lastY = e.clientY;
-  });
-  window.addEventListener("mouseup", () => (dragging = false));
-  window.addEventListener("mousemove", (e) => {
-    if (!dragging) return;
-    cam.yaw += (e.clientX - lastX) * 0.003;
-    cam.pitch += (e.clientY - lastY) * 0.003;
-    cam.pitch = Math.max(-1.5, Math.min(1.5, cam.pitch));
-    lastX = e.clientX;
-    lastY = e.clientY;
-  });
-  window.addEventListener("wheel", (e) => {
-    const f = Math.cos(cam.yaw);
-    const s = Math.sin(cam.yaw);
-    cam.pos[0] += f * e.deltaY * 0.1;
-    cam.pos[1] += s * e.deltaY * 0.1;
-  });
 }
+
+// ---- Pointer lock + input ----
+
+function lockPointer() {
+  canvas.requestPointerLock?.({ unadjustedMovement: true });
+}
+
+canvas.addEventListener("click", () => {
+  if (overlay.classList.contains("hidden") && document.pointerLockElement !== canvas) {
+    lockPointer();
+  }
+});
+
+document.addEventListener("pointerlockchange", () => {
+  if (document.pointerLockElement === canvas) {
+    logEl.textContent = "";
+  }
+});
+
+// Mouse look (raw movement). Sensitivity is applied inside the sim (Quake
+// m_yaw/m_pitch model), so we just forward the raw deltas.
+document.addEventListener("mousemove", (e) => {
+  if (sessionId === null) return;
+  if (document.pointerLockElement === canvas && e.movementX !== undefined) {
+    core.session_add_mouse(sessionId, e.movementX, e.movementY);
+  }
+});
+
+const KEYMAP: Record<string, keyof typeof keys> = {
+  KeyW: "forward", ArrowUp: "forward",
+  KeyS: "back", ArrowDown: "back",
+  KeyA: "left", ArrowLeft: "left",
+  KeyD: "right", ArrowRight: "right",
+  Space: "jump",
+  ShiftLeft: "crouch", ControlLeft: "crouch",
+  KeyM: "special", // dash / wall-jump (matches Warfork's `+special` button)
+};
+
+window.addEventListener("keydown", (e) => {
+  const k = KEYMAP[e.code];
+  if (k && !e.repeat) keys[k] = true;
+  if (e.code === "KeyM") e.preventDefault();
+});
+window.addEventListener("keyup", (e) => {
+  const k = KEYMAP[e.code];
+  if (k) keys[k] = false;
+});
+
+// Mouse buttons: right-click = jump (Warfork default), left = attack (later).
+document.addEventListener("mousedown", (e) => {
+  if (e.button === 2) keys.jump = true;
+});
+document.addEventListener("mouseup", (e) => {
+  if (e.button === 2) keys.jump = false;
+});
+document.addEventListener("contextmenu", (e) => e.preventDefault());
+
+// Push held keys into the sim each frame before stepping.
+function pushKeys() {
+  if (sessionId === null) return;
+  core.session_set_keys(
+    sessionId,
+    keys.forward, keys.back, keys.left, keys.right,
+    keys.jump, keys.crouch, keys.special, false,
+  );
+}
+
+// ---- Main loop ----
 
 let frame = 0;
 let lastFpsTime = performance.now();
-function loop(_t: number) {
+let lastTick = performance.now();
+const TICK_MS = 1000 / 250; // 250 Hz
+
+function loop() {
   frame++;
   const now = performance.now();
+
+  // FPS counter.
   if (now - lastFpsTime > 500) {
     const dt = (now - lastFpsTime) / 1000;
     fpsEl.textContent = `${Math.round(frame / dt)} fps`;
     lastFpsTime = now;
     frame = 0;
   }
-  if (renderer) {
+
+  // Step the sim at a fixed 250 Hz using an accumulator.
+  if (sessionId !== null) {
+    // process queued mouse + keys, then step the fixed-rate loop.
+    let steps = 0;
+    while (now - lastTick >= TICK_MS && steps < 8) {
+      pushKeys();
+      core.session_step(sessionId);
+      lastTick += TICK_MS;
+      steps++;
+    }
+    if (now - lastTick >= TICK_MS) {
+      // We fell behind (e.g. tab was backgrounded) — drop the backlog.
+      lastTick = now;
+    }
+
+    const speed = core.session_speed(sessionId);
+    speedEl.textContent = `${Math.round(speed)} ups`;
+  }
+
+  // Render.
+  if (renderer && sessionId !== null) {
     const aspect = canvas.width / canvas.height;
     const proj = perspective((75 * Math.PI) / 180, aspect, 8, 200000);
-    const view = lookAt(cam.pos, cam.yaw, cam.pitch);
+    const eye = core.session_eye(sessionId);
+    const angles = core.session_angles(sessionId);
+    const view = lookAt([eye[0], eye[1], eye[2]], angles[0], angles[1]);
     renderer.draw(multiply(proj, view));
   }
+
   requestAnimationFrame(loop);
 }
 

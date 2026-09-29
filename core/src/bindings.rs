@@ -13,6 +13,16 @@ thread_local! {
     static MAPS: RefCell<Vec<Bsp>> = RefCell::new(Vec::new());
 }
 
+/// Internal helper: run a closure against a parsed map, returning its result
+/// or an error if the handle is out of range. Used by `session.rs`.
+pub fn with_map<T>(id: usize, f: impl FnOnce(&Bsp) -> T) -> Result<T, JsValue> {
+    MAPS.with(|m| {
+        let m = m.borrow();
+        let bsp = m.get(id).ok_or_else(|| JsValue::from_str("invalid map id"))?;
+        Ok(f(bsp))
+    })
+}
+
 #[wasm_bindgen]
 pub fn bsp_parse(name: &str, data: &[u8]) -> Result<usize, JsValue> {
     let bsp = Bsp::parse(name, data).map_err(|e| JsValue::from_str(&e))?;

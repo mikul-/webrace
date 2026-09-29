@@ -10,8 +10,8 @@
 use crate::input::Cmd;
 use crate::trace::World;
 use crate::{
-    CROUCH_SPEED, DASHJUMP_TIMEDELAY, GRAVITY, PM_ACCELERATE, PM_AIRACCELERATE,
-    PM_AIRCONTROL, PM_AIRDECELERATE, PM_DASH_UPSPEED, PM_FRICTION, PM_OVERBOUNCE,
+    CROUCH_SPEED, DASHJUMP_TIMEDELAY, GRAVITY, PM_ACCELERATE,
+    PM_AIRCONTROL, PM_DASH_UPSPEED, PM_FRICTION, PM_OVERBOUNCE,
     PM_STRANGE_BUNNY_ACCEL, PM_WISHSPEED, PM_WJ_BOUNCE, PM_WJ_UPSPEED, WALK_SPEED,
 };
 
@@ -58,11 +58,36 @@ pub struct Pmove {
     pub world: World,
     pub frametime: f32,
     pub max_speed: f32,
+    pub max_player_speed: f32,
 }
 
 impl Pmove {
     pub fn new(world: World, frametime: f32) -> Self {
-        Pmove { world, frametime, max_speed: 1000.0 }
+        // `max_speed` is the player run speed used by PM_CmdScale (the entity
+        // "speed" field, 320 ups — Quake/Warsow standard). `max_player_speed`
+        // is the air-bunny reference speed (Warfork's `maxPlayerSpeed`).
+        Pmove {
+            world,
+            frametime,
+            max_speed: 320.0,
+            max_player_speed: 600.0,
+        }
+    }
+
+    /// Repeatedly step the player downward (no input) until grounded, so a
+    /// spawn point that hovers above the floor drops to it.
+    pub fn drop_to_ground(&mut self, ps: &mut PlayerState) {
+        for _ in 0..256 {
+            if ps.on_ground {
+                break;
+            }
+            let cmd = Cmd::default();
+            // Apply gravity.
+            ps.velocity[2] -= GRAVITY * self.frametime;
+            self.slide_move(ps);
+            self.update_ground(ps);
+            let _ = cmd;
+        }
     }
 
     /// Advance one tick.
@@ -276,36 +301,40 @@ impl Pmove {
         fwd: f32,
         side: f32,
     ) {
-        // apply friction.
-        let mut speed = (ps.velocity[0] * ps.velocity[0]
+        // Apply ground friction (Quake PM_Friction).
+        let speed = (ps.velocity[0] * ps.velocity[0]
             + ps.velocity[1] * ps.velocity[1]
             + ps.velocity[2] * ps.velocity[2])
             .sqrt();
         if speed > 0.0 {
             let control = if speed < 1.0 { 1.0 } else { speed };
             let drop = control * PM_FRICTION * self.frametime;
-            let newspeed = if speed - drop < 0.0 { 0.0 } else { speed - drop };
-            let newspeed = newspeed / speed.max(0.0001);
+            let newspeed = (speed - drop).max(0.0) / speed.max(0.0001);
             ps.velocity[0] *= newspeed;
             ps.velocity[1] *= newspeed;
             ps.velocity[2] *= newspeed;
         }
 
+        // Project forward/right onto the flat plane and build the wish dir.
         let mut wishvel = [
             forward[0] * fwd + right[0] * side,
             forward[1] * fwd + right[1] * side,
             0.0,
         ];
-        let mut wishspeed = (wishvel[0] * wishvel[0] + wishvel[1] * wishvel[1]).sqrt();
-        if wishspeed > self.max_speed {
-            wishspeed = self.max_speed;
-            let nn = (wishvel[0] * wishvel[0] + wishvel[1] * wishvel[1]).sqrt().max(0.0001);
-            let scale = wishspeed / nn;
-            wishvel[0] *= scale;
-            wishvel[1] *= scale;
+        let len = (wishvel[0] * wishvel[0] + wishvel[1] * wishvel[1]).sqrt();
+        let mut wishspeed = 0.0;
+        if len > 0.0 {
+            wishvel[0] /= len;
+            wishvel[1] /= len;
+            // Quake PM_CmdScale + VectorNormalize cancel the `total` factor:
+            // wishspeed = max_speed * max_mag / 127 (max_mag is the largest
+            // key magnitude, full press = 127).
+            let max_mag = fwd.abs().max(side.abs());
+            wishspeed = self.max_speed * max_mag / 127.0;
         }
+        wishspeed = wishspeed.min(self.max_speed);
+
         self.accelerate(ps, wishvel, wishspeed, PM_ACCELERATE);
-        let _ = speed;
     }
 
     fn air_move(
@@ -316,36 +345,98 @@ impl Pmove {
         fwd: f32,
         side: f32,
     ) {
-        let wishvel = [
+        let mut wishvel = [
             forward[0] * fwd + right[0] * side,
             forward[1] * fwd + right[1] * side,
             0.0,
         ];
-        let mut wishspeed = (wishvel[0] * wishvel[0] + wishvel[1] * wishvel[1]).sqrt();
-        if wishspeed > self.max_speed {
-            wishspeed = self.max_speed;
+        let len = (wishvel[0] * wishvel[0] + wishvel[1] * wishvel[1]).sqrt();
+        let mut wishspeed = 0.0;
+        if len > 0.0 {
+            wishvel[0] /= len;
+            wishvel[1] /= len;
+            let max_mag = fwd.abs().max(side.abs());
+            wishspeed = self.max_speed * max_mag / 127.0;
         }
+        wishspeed = wishspeed.min(self.max_speed);
 
-        // Warfork: two air models — `PMFEAT_AIRCONTROL` (default) and the
-        // "old school" forward-bunny model. We implement the air-control path
-        // (Warfork's default for race), which also handles strafe-bunny accel.
-        let dot = ps.velocity[0] * wishvel[0] + ps.velocity[1] * wishvel[1];
-        let _ = dot;
-
-        // Strafe-bunny short-hop: if strafing (no forward) cap wishspeed.
-        let mut apply_aircontrol = true;
+        // Strafe-bunny short-hop: if strafing (no forward) cap wishspeed to
+        // pm_wishspeed and use the bunny accel (mirrors Warfork air control).
         if side != 0.0 && fwd == 0.0 {
             if wishspeed > PM_WISHSPEED {
                 wishspeed = PM_WISHSPEED;
             }
             self.accelerate(ps, wishvel, wishspeed, PM_STRANGE_BUNNY_ACCEL);
         } else {
-            self.accelerate(ps, wishvel, wishspeed, PM_AIRACCELERATE);
+            // Forward + air movement: use the forward-bunny model which lets
+            // horizontal speed climb toward bunnytopspeed (Warfork fwdbunny).
+            self.air_accelerate(ps, wishvel, wishspeed);
         }
 
-        if apply_aircontrol && PM_AIRCONTROL != 0.0 {
+        if PM_AIRCONTROL != 0.0 {
             self.aircontrol(ps, wishvel, wishspeed);
         }
+    }
+
+    /// `PM_AirAccelerate` (Warfork fwdbunny): accelerates horizontal velocity
+    /// toward the wish direction with a soft cap at `bunnytopspeed` = 925 ups.
+    fn air_accelerate(&mut self, ps: &mut PlayerState, wishdir: [f32; 3], wishspeed: f32) {
+        const AIRFORWARDACCEL: f32 = 1.00001;
+        const BUNNYACCEL: f32 = 0.1593;
+        const BUNNYTOPSPEED: f32 = 925.0;
+        const TURNACCEL: f32 = 4.0;
+        const BACKTOSIDERATIO: f32 = 0.8;
+
+        if wishspeed == 0.0 {
+            return;
+        }
+
+        let curvel = [ps.velocity[0], ps.velocity[1], 0.0];
+        let curspeed = (curvel[0] * curvel[0] + curvel[1] * curvel[1]).sqrt();
+
+        let mut wspeed = wishspeed;
+        if wspeed > curspeed * 1.01 {
+            // moving below max_speed: accelerate quickly up to it.
+            let accelspeed = curspeed + AIRFORWARDACCEL * self.max_player_speed * self.frametime;
+            if accelspeed < wspeed {
+                wspeed = accelspeed;
+            }
+        } else {
+            let mut f = (BUNNYTOPSPEED - curspeed) / (BUNNYTOPSPEED - self.max_player_speed);
+            if f < 0.0 {
+                f = 0.0;
+            }
+            wspeed = curspeed.max(self.max_player_speed)
+                + BUNNYACCEL * f * self.max_player_speed * self.frametime;
+        }
+
+        let wishvel = [wishdir[0] * wspeed, wishdir[1] * wspeed, 0.0];
+        let mut acceldir = [wishvel[0] - curvel[0], wishvel[1] - curvel[1], 0.0];
+        let addspeed = (acceldir[0] * acceldir[0] + acceldir[1] * acceldir[1]).sqrt();
+        if addspeed > 0.0 {
+            acceldir[0] /= addspeed;
+            acceldir[1] /= addspeed;
+        } else {
+            return;
+        }
+
+        let mut accelspeed = TURNACCEL * self.max_player_speed * self.frametime;
+        if accelspeed > addspeed {
+            accelspeed = addspeed;
+        }
+
+        // backtosideratio: soften acceleration when turning against momentum.
+        if BACKTOSIDERATIO < 1.0 && curspeed > 0.0 {
+            let curdir = [curvel[0] / curspeed, curvel[1] / curspeed];
+            let dot = acceldir[0] * curdir[0] + acceldir[1] * curdir[1];
+            if dot < 0.0 {
+                acceldir[0] -= (1.0 - BACKTOSIDERATIO) * dot * curdir[0];
+                acceldir[1] -= (1.0 - BACKTOSIDERATIO) * dot * curdir[1];
+            }
+        }
+
+        ps.velocity[0] += accelspeed * acceldir[0];
+        ps.velocity[1] += accelspeed * acceldir[1];
     }
 
     fn accelerate(&mut self, ps: &mut PlayerState, wishdir: [f32; 3], wishspeed: f32, accel: f32) {
@@ -423,7 +514,7 @@ impl Pmove {
             let step_tr = self.world.trace(start, mins, maxs, step_end);
             if step_tr.fraction < 1.0 && !step_tr.start_solid {
                 let at = step_end;
-                let mut down_end = [at[0], at[1], at[2] - up_delta];
+                let down_end = [at[0], at[1], at[2] - up_delta];
                 let down_tr = self.world.trace(at, mins, maxs, down_end);
                 if down_tr.fraction < 1.0 {
                     end = [
