@@ -11,7 +11,7 @@ use crate::input::Cmd;
 use crate::trace::World;
 use crate::{
     CROUCH_SPEED, DASHJUMP_TIMEDELAY, GRAVITY, PM_ACCELERATE,
-    PM_AIRCONTROL, PM_DASH_UPSPEED, PM_FRICTION, PM_OVERBOUNCE,
+    PM_AIRCONTROL, PM_DASH_UPSPEED, PM_FRICTION,
     PM_STRANGE_BUNNY_ACCEL, PM_WISHSPEED, PM_WJ_BOUNCE, PM_WJ_UPSPEED, WALK_SPEED,
 };
 
@@ -112,11 +112,11 @@ impl Pmove {
         ps.on_ground = true;
     }
 
-    /// Whether the player's feet are resting on a solid surface. Uses a tight
-    /// margin so a player 1+ units off the floor reads as airborne.
+    /// Whether the player's feet are resting on a floor-like surface (a hit
+    /// whose normal points mostly up). A wall or steep slope does NOT count as
+    /// ground — this prevents the player from "sticking" and floating when
+    /// pressed against walls.
     fn grounded(&mut self, ps: &PlayerState) -> bool {
-        // Feet are at origin[2] - 24. Trace just below the feet; a hit within
-        // ~1 unit means contact.
         let down = 2.0;
         let start = ps.origin;
         let end = [ps.origin[0], ps.origin[1], ps.origin[2] - down];
@@ -126,12 +126,18 @@ impl Pmove {
             crate::trace::PLAYER_MAXS,
             end,
         );
-        tr.fraction < 1.0
+        // Grounded only if we actually hit something walkable (flat enough).
+        if tr.fraction >= 1.0 {
+            return false;
+        }
+        // Normal points up (walkable surface: |normal.z| ~ 1, i.e. not a wall).
+        tr.normal[2] > 0.7
     }
 
     /// Advance one tick.
     pub fn step(&mut self, ps: &mut PlayerState, cmd: &Cmd) {
         let special = cmd.buttons & crate::input::BUTTON_SPECIAL != 0;
+        let jump = cmd.buttons & crate::input::BUTTON_JUMP != 0;
 
         // Timers decay (in milliseconds).
         if ps.doshtime > 0 {
@@ -139,6 +145,11 @@ impl Pmove {
         }
         if ps.wjtime > 0 {
             ps.wjtime = ps.wjtime.saturating_sub((self.frametime * 1000.0) as u32);
+        }
+
+        // Release the special-held latch when the button is up.
+        if !special {
+            ps.special_held = false;
         }
 
         // Compute forward/right/up from view yaw (pitch ignored for horizontal).
@@ -152,11 +163,11 @@ impl Pmove {
         let side_push = cmd.right as f32;
         let up_push = cmd.up as f32;
 
-        // Jump.
-        if cmd.buttons & crate::input::BUTTON_JUMP != 0 && !ps.jump_held && ps.on_ground {
+        // Jump — continuous (autohop): while held and grounded, keep hopping.
+        if jump && ps.on_ground {
             self.jump(ps, forward);
         }
-        ps.jump_held = cmd.buttons & crate::input::BUTTON_JUMP != 0;
+        ps.jump_held = jump;
 
         // Wall-jump.
         if special {
@@ -554,12 +565,14 @@ impl Pmove {
         ];
         ps.origin = end2;
 
-        // Clip velocity to the plane (with overbounce).
+        // Clip velocity to the plane: remove the component pointing into it.
+        // (Quake uses OVERCLIP ~1.001 for wall/floor sliding; overbounce 1.01
+        // is only for jumppads. A bare 1.0 prevents wall-sticking drift.)
         let dot = ps.velocity[0] * n[0] + ps.velocity[1] * n[1] + ps.velocity[2] * n[2];
         if dot < 0.0 {
-            ps.velocity[0] -= n[0] * dot * PM_OVERBOUNCE;
-            ps.velocity[1] -= n[1] * dot * PM_OVERBOUNCE;
-            ps.velocity[2] -= n[2] * dot * PM_OVERBOUNCE;
+            ps.velocity[0] -= n[0] * dot;
+            ps.velocity[1] -= n[1] * dot;
+            ps.velocity[2] -= n[2] * dot;
         }
     }
 
