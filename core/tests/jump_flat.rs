@@ -3,13 +3,16 @@ use webrace_core::pmove::{PlayerState, Pmove};
 use webrace_core::trace::World;
 
 fn flat_world() -> World {
+    // A large solid slab: x,y in [-10000,10000], z in [-1000, 0]. The player
+    // stands on the top surface at z=0 (empty above). Solid = negative side
+    // of each plane (dot(n,p) - d < 0), same convention as box_trace.
     let planes = vec![
-        Plane { normal: [0.0, 0.0, 1.0], dist: 0.0 },
-        Plane { normal: [0.0, 0.0, -1.0], dist: 10000.0 },
-        Plane { normal: [1.0, 0.0, 0.0], dist: -10000.0 },
-        Plane { normal: [-1.0, 0.0, 0.0], dist: -10000.0 },
-        Plane { normal: [0.0, 1.0, 0.0], dist: -10000.0 },
-        Plane { normal: [0.0, -1.0, 0.0], dist: -10000.0 },
+        Plane { normal: [0.0, 0.0, 1.0], dist: 0.0 },       // below z=0 solid (floor)
+        Plane { normal: [0.0, 0.0, -1.0], dist: 1000.0 },   // above z=-1000 solid
+        Plane { normal: [1.0, 0.0, 0.0], dist: 10000.0 },   // x < 10000 solid
+        Plane { normal: [-1.0, 0.0, 0.0], dist: 10000.0 },  // x > -10000 solid
+        Plane { normal: [0.0, 1.0, 0.0], dist: 10000.0 },   // y < 10000 solid
+        Plane { normal: [0.0, -1.0, 0.0], dist: 10000.0 },  // y > -10000 solid
     ];
     World {
         brush_plane_offsets: vec![0],

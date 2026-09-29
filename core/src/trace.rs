@@ -86,14 +86,16 @@ impl World {
             let mut enter = -f32::INFINITY;
             let mut exit = f32::INFINITY;
             let mut enter_normal = [0.0f32; 3];
+            let mut inside_all = true;
+            let mut stays_outside = false;
+            let mut deepest = f32::INFINITY; // most-negative start_dist
+            let mut deepest_normal = [0.0f32; 3];
 
             for p in 0..count {
                 let pid = self.brush_plane_ids[offset + p] as usize;
                 let Some(plane) = self.planes.get(pid) else { continue };
                 let n = plane.normal;
 
-                // Signed distance from box center to plane, minus box radius
-                // projected on the normal (support function).
                 let radius =
                     half_ext[0] * n[0].abs() + half_ext[1] * n[1].abs() + half_ext[2] * n[2].abs();
                 let start_dist =
@@ -103,8 +105,19 @@ impl World {
                     + delta[1] * n[1]
                     + delta[2] * n[2];
 
-                // No crossing of this plane along the sweep: doesn't bound.
+                if start_dist > 0.0 {
+                    inside_all = false;
+                }
+                if start_dist < deepest {
+                    deepest = start_dist;
+                    deepest_normal = n;
+                }
+
+                // No crossing along the sweep: doesn't bound the interval.
                 if start_dist > 0.0 && end_dist > 0.0 {
+                    // The box stays on the empty side of this plane for the
+                    // whole sweep, so it never enters this brush at all.
+                    stays_outside = true;
                     continue;
                 }
                 if start_dist < 0.0 && end_dist < 0.0 {
@@ -118,20 +131,28 @@ impl World {
                 let t = if denom.abs() < 1e-12 { 0.0 } else { start_dist / denom };
 
                 if start_dist > end_dist {
-                    // Moving into the solid side: entering this half-space.
                     if t > enter {
                         enter = t;
                         enter_normal = n;
                     }
                 } else if start_dist < 0.0 {
-                    // Currently inside (start_dist < 0) and moving out
-                    // (end_dist > start_dist): this bounds the exit.
                     if t < exit {
                         exit = t;
                     }
                 }
-                // start_dist == 0 and moving away (end_dist > 0): the box is
-                // touching but leaves — imposes no constraint, skip.
+            }
+
+            if inside_all {
+                // The box is fully inside this brush at the start position.
+                start_solid = true;
+                best_normal = deepest_normal;
+                break;
+            }
+
+            if stays_outside {
+                // The box remains outside at least one bounding plane, so it
+                // never enters this brush. No hit.
+                continue;
             }
 
             if enter > f32::NEG_INFINITY && enter < exit {
