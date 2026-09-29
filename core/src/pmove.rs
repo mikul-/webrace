@@ -10,7 +10,7 @@
 use crate::input::Cmd;
 use crate::trace::World;
 use crate::{
-    CROUCH_SPEED, DASHJUMP_TIMEDELAY, GRAVITY, PM_ACCELERATE,
+    CROUCH_SPEED, DASHJUMP_TIMEDELAY, GRAVITY, PM_ACCELERATE, PM_AIRACCELERATE,
     PM_AIRCONTROL, PM_DASH_UPSPEED, PM_FRICTION,
     PM_STRANGE_BUNNY_ACCEL, PM_WISHSPEED, PM_WJ_BOUNCE, PM_WJ_UPSPEED, WALK_SPEED,
 };
@@ -194,10 +194,8 @@ impl Pmove {
         // Integrate position with collision.
         self.slide_move(ps);
 
-        ps.speed = (ps.velocity[0] * ps.velocity[0]
-            + ps.velocity[1] * ps.velocity[1]
-            + ps.velocity[2] * ps.velocity[2])
-            .sqrt();
+        // Horizontal speed only (ups = forward/strafe speed, not vertical).
+        ps.speed = (ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]).sqrt();
 
         // Recompute ground contact.
         self.update_ground(ps);
@@ -407,23 +405,30 @@ impl Pmove {
             wishvel[1] /= len;
             let max_mag = fwd.abs().max(side.abs());
             wishspeed = self.max_speed * max_mag / 127.0;
+            wishspeed = wishspeed.min(self.max_speed);
         }
-        wishspeed = wishspeed.min(self.max_speed);
 
-        // Strafe-bunny short-hop: if strafing (no forward) cap wishspeed to
-        // pm_wishspeed and use the bunny accel (mirrors Warfork air control).
-        if side != 0.0 && fwd == 0.0 {
+        let accelerating = ps.velocity[0] * wishvel[0] + ps.velocity[1] * wishvel[1] > 0.0;
+
+        if fwd != 0.0 && side == 0.0 && accelerating {
+            // Forward-only (no strafe): forward-bunny — lets speed climb to
+            // bunnytopspeed (Warfork PMFEAT_FWDBUNNY / PM_AirAccelerate).
+            self.air_accelerate(ps, wishvel, wishspeed);
+        } else if side != 0.0 && fwd == 0.0 {
+            // Pure strafe (no forward): cap wishspeed and use bunny accel.
             if wishspeed > PM_WISHSPEED {
                 wishspeed = PM_WISHSPEED;
             }
             self.accelerate(ps, wishvel, wishspeed, PM_STRANGE_BUNNY_ACCEL);
         } else {
-            // Forward + air movement: use the forward-bunny model which lets
-            // horizontal speed climb toward bunnytopspeed (Warfork fwdbunny).
-            self.air_accelerate(ps, wishvel, wishspeed);
+            // Strafe-jump (forward + strafe): standard Quake air accel, which
+            // produces forward momentum and speed-up at the strafe sweet spot.
+            self.accelerate(ps, wishvel, wishspeed, PM_AIRACCELERATE);
         }
 
-        if PM_AIRCONTROL != 0.0 {
+        // Air control: convert inertia toward the wish direction (Warfork
+        // PM_Aircontrol, applies when moving, not strafing).
+        if PM_AIRCONTROL != 0.0 && side == 0.0 && fwd != 0.0 {
             self.aircontrol(ps, wishvel, wishspeed);
         }
     }
@@ -535,18 +540,19 @@ impl Pmove {
         ps.velocity[2] = zspeed;
     }
 
-    /// Slide the player along the world, resolving collision (simplified
-    /// `PM_SlideMove`): trace forward, move to the impact, clip velocity
-    /// along the hit plane (overbounce 1.01). No stair-stepping yet.
+    /// Slide the player along the world, resolving collision with stair-step
+    /// support (Quake PM_StepSlideMove): a single trace + plane clip, and if
+    /// blocked, an 18-unit step-up attempt.
     fn slide_move(&mut self, ps: &mut PlayerState) {
+        let mins = crate::trace::PLAYER_MINS;
+        let maxs = crate::trace::PLAYER_MAXS;
+
         let start = ps.origin;
         let end = [
             start[0] + ps.velocity[0] * self.frametime,
             start[1] + ps.velocity[1] * self.frametime,
             start[2] + ps.velocity[2] * self.frametime,
         ];
-        let mins = crate::trace::PLAYER_MINS;
-        let maxs = crate::trace::PLAYER_MAXS;
 
         let tr = self.world.trace(start, mins, maxs, end);
 
@@ -555,9 +561,47 @@ impl Pmove {
             return;
         }
 
-        // Move to the impact point (with a small epsilon so we don't re-stick).
+        // Blocked. Try stepping up (18 units, Quake default) if moving mostly
+        // horizontally.
+        let step = 18.0;
+        let horizontal =
+            (ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]).sqrt();
+        if horizontal > 1.0 {
+            // Move up, then forward horizontally, then drop back down.
+            let up_pos = [start[0], start[1], start[2] + step];
+            let up_tr = self.world.trace(start, mins, maxs, up_pos);
+            if up_tr.fraction >= 1.0 {
+                let fwd_end = [
+                    up_pos[0] + ps.velocity[0] * self.frametime,
+                    up_pos[1] + ps.velocity[1] * self.frametime,
+                    up_pos[2],
+                ];
+                let fwd_tr = self.world.trace(up_pos, mins, maxs, fwd_end);
+                if fwd_tr.fraction > 0.0 {
+                    let at = [
+                        up_pos[0] + (fwd_end[0] - up_pos[0]) * fwd_tr.fraction,
+                        up_pos[1] + (fwd_end[1] - up_pos[1]) * fwd_tr.fraction,
+                        up_pos[2],
+                    ];
+                    // Drop down to find the landing height.
+                    let down_end = [at[0], at[1], at[2] - step];
+                    let down_tr = self.world.trace(at, mins, maxs, down_end);
+                    ps.origin = [
+                        at[0],
+                        at[1],
+                        at[2] - step * down_tr.fraction,
+                    ];
+                    if ps.velocity[2] < 0.0 {
+                        ps.velocity[2] = 0.0;
+                    }
+                    return;
+                }
+            }
+        }
+
+        // Ordinary slide: move to impact + clip.
         let n = tr.normal;
-        let eps = 0.01;
+        let eps = 0.05;
         let end2 = [
             start[0] + (end[0] - start[0]) * tr.fraction + n[0] * eps,
             start[1] + (end[1] - start[1]) * tr.fraction + n[1] * eps,
@@ -565,9 +609,6 @@ impl Pmove {
         ];
         ps.origin = end2;
 
-        // Clip velocity to the plane: remove the component pointing into it.
-        // (Quake uses OVERCLIP ~1.001 for wall/floor sliding; overbounce 1.01
-        // is only for jumppads. A bare 1.0 prevents wall-sticking drift.)
         let dot = ps.velocity[0] * n[0] + ps.velocity[1] * n[1] + ps.velocity[2] * n[2];
         if dot < 0.0 {
             ps.velocity[0] -= n[0] * dot;
