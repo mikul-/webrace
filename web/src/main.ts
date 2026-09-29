@@ -89,7 +89,7 @@ async function loadMap() {
     lockPointer();
     setStatus("");
     log(`${name}: ${triCount} tris, ${brushCount} brushes — click to lock mouse`);
-    log("WASD move · SPACE jump · SHIFT/CTRL crouch · CLICK special (dash/walljump)");
+    log("WASD move · SPACE dash/walljump · right-click jump · Shift/Ctrl crouch");
     requestAnimationFrame(loop);
   } catch (e) {
     setStatus(`load failed: ${(e as Error).message}`);
@@ -140,15 +140,16 @@ const KEYMAP: Record<string, keyof typeof keys> = {
   KeyS: "back", ArrowDown: "back",
   KeyA: "left", ArrowLeft: "left",
   KeyD: "right", ArrowRight: "right",
-  Space: "jump",
   ShiftLeft: "crouch", ControlLeft: "crouch",
-  KeyM: "special", // dash / wall-jump (matches Warfork's `+special` button)
+  // Space = dash / wall-jump (`+special`), matching your Warfork config
+  // (`bind SPACE "+special"`, `bind MOUSE2 "+moveup"`). Jump = right-click.
+  Space: "special",
 };
 
 window.addEventListener("keydown", (e) => {
   const k = KEYMAP[e.code];
   if (k && !e.repeat) keys[k] = true;
-  if (e.code === "KeyM") e.preventDefault();
+  if (e.code === "Space") e.preventDefault();
 });
 window.addEventListener("keyup", (e) => {
   const k = KEYMAP[e.code];

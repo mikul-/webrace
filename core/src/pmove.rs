@@ -74,20 +74,59 @@ impl Pmove {
         }
     }
 
-    /// Repeatedly step the player downward (no input) until grounded, so a
-    /// spawn point that hovers above the floor drops to it.
+    /// Settle the player onto the ground. Handles spawn points floating above
+    /// the floor or embedded in geometry by simulating a short drop; then
+    /// zeroes velocity so the player starts clean.
     pub fn drop_to_ground(&mut self, ps: &mut PlayerState) {
+        const PLAYER_MINS: [f32; 3] = crate::trace::PLAYER_MINS;
+        const PLAYER_MAXS: [f32; 3] = crate::trace::PLAYER_MAXS;
+
+        // If embedded (start_solid), nudge up until free.
         for _ in 0..256 {
-            if ps.on_ground {
+            let tr = self.world.trace(ps.origin, PLAYER_MINS, PLAYER_MAXS, ps.origin);
+            if !tr.start_solid {
                 break;
             }
-            let cmd = Cmd::default();
-            // Apply gravity.
+            ps.origin[2] += 2.0;
+        }
+
+        // Simulate falling until the feet come to rest on the surface.
+        for _ in 0..512 {
             ps.velocity[2] -= GRAVITY * self.frametime;
             self.slide_move(ps);
-            self.update_ground(ps);
-            let _ = cmd;
+            if self.grounded(ps) && ps.velocity[2].abs() < 20.0 {
+                break;
+            }
         }
+
+        ps.velocity = [0.0, 0.0, 0.0];
+        ps.speed = 0.0;
+        // Final: resolve any remaining embedding by nudging up a bit.
+        for _ in 0..64 {
+            let tr = self.world.trace(ps.origin, PLAYER_MINS, PLAYER_MAXS, ps.origin);
+            if !tr.start_solid {
+                break;
+            }
+            ps.origin[2] += 1.0;
+        }
+        ps.on_ground = true;
+    }
+
+    /// Whether the player's feet are resting on a solid surface. Uses a tight
+    /// margin so a player 1+ units off the floor reads as airborne.
+    fn grounded(&mut self, ps: &PlayerState) -> bool {
+        // Feet are at origin[2] - 24. Trace just below the feet; a hit within
+        // ~1 unit means contact.
+        let down = 2.0;
+        let start = ps.origin;
+        let end = [ps.origin[0], ps.origin[1], ps.origin[2] - down];
+        let tr = self.world.trace(
+            start,
+            crate::trace::PLAYER_MINS,
+            crate::trace::PLAYER_MAXS,
+            end,
+        );
+        tr.fraction < 1.0
     }
 
     /// Advance one tick.
@@ -486,11 +525,11 @@ impl Pmove {
     }
 
     /// Slide the player along the world, resolving collision (simplified
-    /// `PM_StepSlideMove` — one trace + one reflection per tick; enough for
-    /// correct strafe-jumping on flat/quasi-flat geometry).
+    /// `PM_SlideMove`): trace forward, move to the impact, clip velocity
+    /// along the hit plane (overbounce 1.01). No stair-stepping yet.
     fn slide_move(&mut self, ps: &mut PlayerState) {
         let start = ps.origin;
-        let mut end = [
+        let end = [
             start[0] + ps.velocity[0] * self.frametime,
             start[1] + ps.velocity[1] * self.frametime,
             start[2] + ps.velocity[2] * self.frametime,
@@ -498,57 +537,24 @@ impl Pmove {
         let mins = crate::trace::PLAYER_MINS;
         let maxs = crate::trace::PLAYER_MAXS;
 
-        // First, allow stepping (like PM_StepSlideMove): try to step up stairs.
-        let mut tr = self.world.trace(start, mins, maxs, end);
-        if tr.start_solid || tr.fraction < 1.0 {
-            // try step up (18 units, Quake default step)
-            let up_delta = 18.0;
-            let mut step_end = [start[0], start[1], start[2] + up_delta];
-            let v = [
-                ps.velocity[0] * self.frametime,
-                ps.velocity[1] * self.frametime,
-                0.0,
-            ];
-            step_end[0] += v[0];
-            step_end[1] += v[1];
-            let step_tr = self.world.trace(start, mins, maxs, step_end);
-            if step_tr.fraction < 1.0 && !step_tr.start_solid {
-                let at = step_end;
-                let down_end = [at[0], at[1], at[2] - up_delta];
-                let down_tr = self.world.trace(at, mins, maxs, down_end);
-                if down_tr.fraction < 1.0 {
-                    end = [
-                        at[0],
-                        at[1],
-                        at[2] - (1.0 - down_tr.fraction) * up_delta,
-                    ];
-                    tr = down_tr;
-                    ps.origin = end;
-                    // Clear downward velocity from the step.
-                    if ps.velocity[2] < 0.0 {
-                        ps.velocity[2] = 0.0;
-                    }
-                    // horizontal velocity preserved by slide below
-                }
-            }
-        }
+        let tr = self.world.trace(start, mins, maxs, end);
 
         if tr.fraction >= 1.0 {
             ps.origin = end;
             return;
         }
 
-        if tr.fraction > 0.0 {
-            end = [
-                start[0] * (1.0 - tr.fraction) + end[0] * tr.fraction + tr.normal[0] * 0.01,
-                start[1] * (1.0 - tr.fraction) + end[1] * tr.fraction + tr.normal[1] * 0.01,
-                start[2] * (1.0 - tr.fraction) + end[2] * tr.fraction + tr.normal[2] * 0.01,
-            ];
-        }
-        ps.origin = end;
-
-        // Clip velocity to the plane (overbounce factor 1.01).
+        // Move to the impact point (with a small epsilon so we don't re-stick).
         let n = tr.normal;
+        let eps = 0.01;
+        let end2 = [
+            start[0] + (end[0] - start[0]) * tr.fraction + n[0] * eps,
+            start[1] + (end[1] - start[1]) * tr.fraction + n[1] * eps,
+            start[2] + (end[2] - start[2]) * tr.fraction + n[2] * eps,
+        ];
+        ps.origin = end2;
+
+        // Clip velocity to the plane (with overbounce).
         let dot = ps.velocity[0] * n[0] + ps.velocity[1] * n[1] + ps.velocity[2] * n[2];
         if dot < 0.0 {
             ps.velocity[0] -= n[0] * dot * PM_OVERBOUNCE;
@@ -558,16 +564,7 @@ impl Pmove {
     }
 
     fn update_ground(&mut self, ps: &mut PlayerState) {
-        // A downward trace just below the origin determines ground plane.
-        let start = ps.origin;
-        let end = [start[0], start[1], start[2] - 1.0];
-        let tr = self.world.trace(
-            start,
-            crate::trace::PLAYER_MINS,
-            crate::trace::PLAYER_MAXS,
-            end,
-        );
-        ps.on_ground = tr.fraction < 1.0;
+        ps.on_ground = self.grounded(ps);
     }
 }
 

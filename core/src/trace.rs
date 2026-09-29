@@ -114,18 +114,24 @@ impl World {
                     continue;
                 }
 
-                // Crossing (includes start_dist == 0 touching, and end == 0).
                 let denom = start_dist - end_dist;
                 let t = if denom.abs() < 1e-12 { 0.0 } else { start_dist / denom };
+
                 if start_dist > end_dist {
-                    // Entering the brush through this plane.
+                    // Moving into the solid side: entering this half-space.
                     if t > enter {
                         enter = t;
                         enter_normal = n;
                     }
-                } else if t < exit {
-                    exit = t;
+                } else if start_dist < 0.0 {
+                    // Currently inside (start_dist < 0) and moving out
+                    // (end_dist > start_dist): this bounds the exit.
+                    if t < exit {
+                        exit = t;
+                    }
                 }
+                // start_dist == 0 and moving away (end_dist > 0): the box is
+                // touching but leaves — imposes no constraint, skip.
             }
 
             if enter > f32::NEG_INFINITY && enter < exit {

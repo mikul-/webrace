@@ -152,13 +152,11 @@ fn parse_planes(data: &[u8], lump: &(u32, u32)) -> Vec<Plane> {
     let mut out = Vec::with_capacity(n);
     let mut i = off as usize;
     for _ in 0..n {
-        let normal = [
-            read_f32(data, i),
-            read_f32(data, i + 4),
-            read_f32(data, i + 8),
-        ];
+        // Raw Quake plane; transform to render space with the same rigid
+        // `q2t = (x, z, -y)` mapping applied to vertices and spawns.
+        let (nx, ny, nz) = (read_f32(data, i), read_f32(data, i + 4), read_f32(data, i + 8));
         let dist = read_f32(data, i + 12);
-        out.push(Plane { normal, dist });
+        out.push(Plane { normal: [nx, nz, -ny], dist });
         i += DPLANE_SIZE;
     }
     out
@@ -324,18 +322,28 @@ fn parse_spawns(data: &[u8], lump: &(u32, u32)) -> Vec<SpawnPoint> {
             i += 2;
         }
 
+        let is_start = matches!(
+            classname.as_deref(),
+            Some("target_startTimer") | Some("target_start")
+        );
         let is_spawn = matches!(
             classname.as_deref(),
             Some("info_player_start") | Some("info_player_deathmatch") | Some("info_player_intermission")
         );
-        if is_spawn {
-            if let Some([x, y, z]) = origin {
-                // Quake -> render space: q2t = (x, z, -y)
-                let render = [x, z, -y];
-                // Quake "angle" is yaw in degrees, 0 = +X, positive turns CCW
-                // (viewed from +Z). Convert to radians; our yaw matches lookAt.
-                let yaw = -angle.to_radians();
-                out.push(SpawnPoint { origin: render, yaw });
+        if (is_start || is_spawn) && origin.is_some() {
+            let [x, y, z] = origin.unwrap();
+            // Quake -> render space: q2t = (x, z, -y).
+            let render = [x, z, -y];
+            // Quake "angle" is yaw in degrees. Convert to radians.
+            let yaw = -angle.to_radians();
+            let point = SpawnPoint { origin: render, yaw };
+            if is_spawn {
+                // Prefer actual player spawns (info_player_*); they are where
+                // the player physically stands. Start timers (virtual race
+                // start lines) are only a fallback if no spawn exists.
+                out.insert(0, point);
+            } else {
+                out.push(point);
             }
         }
     }
