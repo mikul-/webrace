@@ -10,7 +10,13 @@ export class Renderer {
   private ibo: WebGLBuffer;
   private indexCount = 0;
   private uProjView: WebGLUniformLocation;
+  private uHasTexture: WebGLUniformLocation;
   private lightmapTex: WebGLTexture;
+  private whiteTex: WebGLTexture;
+  private textures: Map<number, WebGLTexture>;
+  private texCount: number;
+  /** Draw chunks: (firstIndex, indexCount, textureId). */
+  private chunks: Array<{ first: number; count: number; tex: number }> = [];
 
   constructor(canvas: HTMLCanvasElement) {
     const gl = canvas.getContext("webgl2", {
@@ -37,16 +43,18 @@ export class Renderer {
     const fs = `#version 300 es
       precision highp float;
       in vec2 v_uv; in vec2 v_lm; in vec3 v_norm; in vec4 v_color;
+      uniform sampler2D u_texture;
       uniform sampler2D u_lightmap;
+      uniform float u_has_texture;
       out vec4 outColor;
       void main() {
-        // Baked lightmap provides actual lighting. Q3 lightmaps are stored
-        // dark (avg ~7/255) and are meant to multiply a surface texture; with
-        // no textures yet we lift them strongly so geometry is visible.
+        // Surface albedo (from texture) or a neutral gray fallback.
+        vec3 albedo = mix(vec3(0.62), texture(u_texture, v_uv).rgb, u_has_texture);
+        // Baked lightmap: stored dark, meant to multiply the albedo.
         vec3 lm = texture(u_lightmap, v_lm).rgb;
-        // Perceptual lift: sqrt compresses the dynamic range and brightens.
-        vec3 base = pow(lm * 8.0, vec3(0.62));
-        base = min(base, vec3(1.0));
+        // Overbright in the style of Q3 (r_overbrightBits ~2) + gamma lift.
+        vec3 base = albedo * lm * 4.0;
+        base = pow(clamp(base, 0.0, 1.0), vec3(0.72));
         outColor = vec4(base, 1.0);
       }`;
 
@@ -54,17 +62,26 @@ export class Renderer {
     gl.useProgram(this.program);
 
     this.uProjView = gl.getUniformLocation(this.program, "u_proj_view")!;
+    this.uHasTexture = gl.getUniformLocation(this.program, "u_has_texture")!;
     const uLightmap = gl.getUniformLocation(this.program, "u_lightmap");
+    const uTexture = gl.getUniformLocation(this.program, "u_texture");
     if (uLightmap) gl.uniform1i(uLightmap, 0);
+    if (uTexture) gl.uniform1i(uTexture, 1);
 
     // Lightmap atlas texture (unit 0).
     this.lightmapTex = gl.createTexture()!;
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.lightmapTex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    setTexParams(gl);
+
+    // Texture cache (unit 1): shader-index -> WebGLTexture.
+    this.textures = new Map();
+    this.texCount = 0;
+    // Default 1x1 white texture for faces whose image failed to load.
+    this.whiteTex = gl.createTexture()!;
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.whiteTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([158, 158, 158, 255]));
 
     this.vao = gl.createVertexArray()!;
     this.vbo = gl.createBuffer()!;
@@ -83,9 +100,9 @@ export class Renderer {
     gl.enableVertexAttribArray(2);
     gl.vertexAttribPointer(2, 2, gl.FLOAT, false, stride, 20);
     gl.enableVertexAttribArray(3);
-    gl.vertexAttribPointer(3, 3, gl.FLOAT, false, stride, 44);
+    gl.vertexAttribPointer(3, 3, gl.FLOAT, false, stride, 28);
     gl.enableVertexAttribArray(4);
-    gl.vertexAttribPointer(4, 4, gl.FLOAT, false, stride, 56);
+    gl.vertexAttribPointer(4, 4, gl.FLOAT, false, stride, 40);
 
     gl.enable(gl.DEPTH_TEST);
     // Culling disabled for now: the q2t reflection may flip winding, and
@@ -149,6 +166,25 @@ export class Renderer {
     this.gl.viewport(0, 0, w, h);
   }
 
+  /** Set the draw chunks (first index, count, texture id) for this map. */
+  setChunks(chunks: Array<{ first: number; count: number; tex: number }>) {
+    this.chunks = chunks;
+  }
+
+  /** Register a decoded image as a texture, returning a texture id. */
+  registerTexture(img: { width: number; height: number; data: Uint8ClampedArray | Uint8Array }): number {
+    const gl = this.gl;
+    const tex = gl.createTexture()!;
+    const id = this.texCount++;
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    setTexParams(gl);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, img.width, img.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, img.data);
+    this.textures.set(id, tex);
+    return id;
+  }
+
   draw(projView: Float32Array) {
     const gl = this.gl;
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -156,9 +192,33 @@ export class Renderer {
     gl.useProgram(this.program);
     gl.uniformMatrix4fv(this.uProjView, false, projView);
     gl.bindVertexArray(this.vao);
-    gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_INT, 0);
+
+    if (this.chunks.length === 0) {
+      // Fallback: draw everything with no texture.
+      gl.uniform1f(this.uHasTexture, 0);
+      gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_INT, 0);
+    } else {
+      for (const c of this.chunks) {
+        const tex = this.textures.get(c.tex);
+        if (tex) {
+          gl.activeTexture(gl.TEXTURE1);
+          gl.bindTexture(gl.TEXTURE_2D, tex);
+          gl.uniform1f(this.uHasTexture, 1);
+        } else {
+          gl.uniform1f(this.uHasTexture, 0);
+        }
+        gl.drawElements(gl.TRIANGLES, c.count, gl.UNSIGNED_INT, c.first * 4);
+      }
+    }
     gl.bindVertexArray(null);
   }
+}
+
+function setTexParams(gl: WebGL2RenderingContext) {
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
 }
 
 // 4x4 matrix helpers (column-major floats). Kept minimal and inlined.

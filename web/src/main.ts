@@ -5,6 +5,7 @@
 
 import { Renderer, perspective, lookAt, multiply } from "./render/renderer";
 import { fetchBsp } from "./sim/map";
+import { loadTexture } from "./render/textures";
 import init, * as core from "../pkg/webrace_core.js";
 
 const overlay = document.getElementById("overlay")!;
@@ -94,6 +95,36 @@ async function loadMap() {
       core.bsp_lightmap_w(mapId),
       core.bsp_lightmap_h(mapId),
     );
+
+    // Determine draw chunks + load textures per unique shader.
+    const chunkCount = core.bsp_chunk_count(mapId);
+    const shaderIdx = new Uint32Array(chunkCount);
+    const chunkFirst = new Uint32Array(chunkCount);
+    const chunkCountArr = new Uint32Array(chunkCount);
+    core.bsp_chunks(mapId, shaderIdx, chunkFirst, chunkCountArr);
+
+    // Unique shaders used by the map.
+    const uniqueShaders = Array.from(new Set(Array.from(shaderIdx)));
+    const texIdByShader = new Map<number, number>();
+    await Promise.all(
+      uniqueShaders.map(async (s) => {
+        const shaderName = core.bsp_shader_name(mapId, s);
+        const img = await loadTexture(shaderName);
+        if (img) {
+          texIdByShader.set(s, renderer!.registerTexture(img));
+        }
+      }),
+    );
+
+    const chunks = [];
+    for (let i = 0; i < chunkCount; i++) {
+      chunks.push({
+        first: chunkFirst[i],
+        count: chunkCountArr[i],
+        tex: texIdByShader.get(shaderIdx[i]) ?? -1,
+      });
+    }
+    renderer.setChunks(chunks);
 
     // Create a playable session at spawn point 0.
     if (sessionId !== null) core.session_drop(sessionId);

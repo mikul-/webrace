@@ -108,6 +108,42 @@ async function resolveBsp(name) {
   return null;
 }
 
+// Cache raw texture buffers by lowercase path (without extension).
+const texCache = new Map();
+
+async function resolveTexture(shaderName) {
+  // shaderName like "textures/base_wall/basewall01_owfx" (no extension).
+  const key = shaderName.toLowerCase();
+  if (texCache.has(key)) return texCache.get(key);
+
+  const candidates = [
+    shaderName + ".jpg",
+    shaderName + ".tga",
+    shaderName + ".png",
+    shaderName + ".webp",
+  ].map((c) => c.toLowerCase());
+
+  for (const pk3 of pk3Files) {
+    try {
+      const buf = await readFile(pk3);
+      const entries = readCentralDirectory(buf);
+      for (const e of entries) {
+        const lower = e.name.toLowerCase();
+        if (candidates.includes(lower)) {
+          const bytes = await extract(buf, e);
+          const ext = lower.split(".").pop();
+          texCache.set(key, { bytes, ext });
+          console.log(`[tex] ${shaderName} <- ${basename(pk3)}/${e.name} (${bytes.length} bytes)`);
+          return texCache.get(key);
+        }
+      }
+    } catch {
+      /* skip */
+    }
+  }
+  return null;
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
   if (url.pathname.startsWith("/maps/") && url.pathname.endsWith(".bsp")) {
@@ -130,9 +166,33 @@ const server = http.createServer(async (req, res) => {
       return;
     }
   }
+
+  if (url.pathname.startsWith("/tex/")) {
+    const shaderName = decodeURIComponent(url.pathname.slice("/tex/".length));
+    try {
+      const tex = await resolveTexture(shaderName);
+      if (!tex) {
+        res.writeHead(404).end("texture not found: " + shaderName);
+        return;
+      }
+      const mime = tex.ext === "png" ? "image/png" : tex.ext === "jpg" ? "image/jpeg" : "application/octet-stream";
+      res.writeHead(200, {
+        "Content-Type": mime,
+        "Content-Length": tex.bytes.length,
+        "Cache-Control": "public, max-age=86400",
+      });
+      res.end(tex.bytes);
+      return;
+    } catch (e) {
+      res.writeHead(500).end("error: " + e.message);
+      return;
+    }
+  }
+
   res.writeHead(404).end("not found");
 });
 
 server.listen(PORT, () => {
   console.log(`[maps] serving on http://127.0.0.1:${PORT}/maps/<name>.bsp`);
+  console.log(`[tex]  serving on http://127.0.0.1:${PORT}/tex/<shader-name>`);
 });

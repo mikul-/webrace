@@ -105,6 +105,53 @@ pub fn bsp_lightmap_h(id: usize) -> u32 {
     MAPS.with(|m| m.borrow().get(id).map(|b| b.lightmap_atlas_h).unwrap_or(0))
 }
 
+#[wasm_bindgen]
+pub fn bsp_chunk_count(id: usize) -> usize {
+    MAPS.with(|m| m.borrow().get(id).map(|b| b.chunks.len()).unwrap_or(0))
+}
+
+/// Write chunk data into JS-provided arrays: (shader_index, first_index,
+/// index_count) triplets. `shader_idx`, `first`, `count` are pre-allocated
+/// `Uint32Array`s of length chunk_count.
+#[wasm_bindgen]
+pub fn bsp_chunks(
+    id: usize,
+    shader_idx: &mut [u32],
+    first: &mut [u32],
+    count: &mut [u32],
+) {
+    MAPS.with(|m| {
+        let b = m.borrow();
+        if let Some(bsp) = b.get(id) {
+            for (i, (shader, f, c)) in bsp.chunks.iter().enumerate() {
+                if i >= shader_idx.len() {
+                    break;
+                }
+                shader_idx[i] = *shader as u32;
+                first[i] = *f;
+                count[i] = *c;
+            }
+        }
+    });
+}
+
+/// Return the shader name for a given shader index (empty if out of range).
+#[wasm_bindgen]
+pub fn bsp_shader_name(id: usize, shader_index: usize) -> String {
+    MAPS.with(|m| {
+        m.borrow()
+            .get(id)
+            .and_then(|b| b.shaders.get(shader_index))
+            .cloned()
+            .unwrap_or_default()
+    })
+}
+
+#[wasm_bindgen]
+pub fn bsp_shader_count(id: usize) -> usize {
+    MAPS.with(|m| m.borrow().get(id).map(|b| b.shaders.len()).unwrap_or(0))
+}
+
 /// Completely drop all loaded maps and reset the thread-local store.
 #[wasm_bindgen]
 pub fn bsp_release_all() {
