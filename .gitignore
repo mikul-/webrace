@@ -1,4 +1,3 @@
-/node_modules/
 /dist/
 /target/
 **/target/
@@ -9,3 +8,7 @@
 /maps/*.bsp
 /maps/*.pk3
 core/pkg/
+web/pkg/
+node_modules/
+**/node_modules/
+**/.vite/
