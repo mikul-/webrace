@@ -10,8 +10,8 @@
 //!   lm_size[2])
 //! - `dshaderref_t`= 72 bytes (name[64] + flags i32 + contents i32)
 //!
-//! Coordinate transform to render space (three.js Y-up / Z-forward):
-//! `q2t = (x, z, -y)` — same mapping `wf-tool` uses so ghosts line up.
+//! Coordinates are used in Quake's native Z-up space directly (no rotation),
+//! matching the physics (`pmove`) and camera (`lookAt`) which are both Z-up.
 
 #![allow(dead_code)]
 
@@ -170,11 +170,10 @@ fn parse_planes(data: &[u8], lump: &(u32, u32)) -> Vec<Plane> {
     let mut out = Vec::with_capacity(n);
     let mut i = off as usize;
     for _ in 0..n {
-        // Raw Quake plane; transform to render space with the same rigid
-        // `q2t = (x, z, -y)` mapping applied to vertices and spawns.
+        // Raw Quake plane (Z-up), unchanged — matches our physics/camera space.
         let (nx, ny, nz) = (read_f32(data, i), read_f32(data, i + 4), read_f32(data, i + 8));
         let dist = read_f32(data, i + 12);
-        out.push(Plane { normal: [nx, nz, -ny], dist });
+        out.push(Plane { normal: [nx, ny, nz], dist });
         i += DPLANE_SIZE;
     }
     out
@@ -243,6 +242,7 @@ fn parse_drawable(
             data[p + 42] as f32 / 255.0,
             data[p + 43] as f32 / 255.0,
         );
+        // Keep Quake's native Z-up coordinates (matches our physics/camera).
         raw_v.push([x, y, z, tu, tv, lu, lv, nx, ny, nz, r, g, b, a]);
     }
 
@@ -301,12 +301,13 @@ fn parse_drawable(
                 let v = raw_v[vi];
                 let au = (atlas_x as f32 + v[5] * LIGHTMAP_W as f32) / atlas_w;
                 let av = (atlas_y as f32 + v[6] * LIGHTMAP_H as f32) / atlas_h;
+                // 14 floats per vertex: pos(3) tex(2) lm(2) normal(3) color(4)
                 rv.extend_from_slice(&[
-                    v[0], v[2], -v[1],
-                    v[3], v[4],
-                    au, av,
-                    v[7], v[9], -v[8],
-                    v[10], v[11], v[12], v[13],
+                    v[0], v[1], v[2],   // pos (Z-up)
+                    v[3], v[4],          // tex uv
+                    au, av,              // lightmap atlas uv
+                    v[7], v[8], v[9],    // normal (Z-up)
+                    v[10], v[11], v[12], v[13], // r,g,b,a
                 ]);
             }
             for k in 0..face_verts.len() as u32 {
@@ -435,10 +436,11 @@ fn parse_spawns(data: &[u8], lump: &(u32, u32)) -> Vec<SpawnPoint> {
         );
         if (is_start || is_spawn) && origin.is_some() {
             let [x, y, z] = origin.unwrap();
-            // Quake -> render space: q2t = (x, z, -y).
-            let render = [x, z, -y];
-            // Quake "angle" is yaw in degrees. Convert to radians.
-            let yaw = -angle.to_radians();
+            // Quake Z-up coordinates (unchanged) — matches physics/camera.
+            let render = [x, y, z];
+            // Quake "angle" is yaw in degrees; 0 = +X, positive = CCW from +Z.
+            // Our yaw convention matches (forward = [cos yaw, sin yaw, 0]).
+            let yaw = angle.to_radians();
             let point = SpawnPoint { origin: render, yaw };
             if is_spawn {
                 // Prefer actual player spawns (info_player_*); they are where

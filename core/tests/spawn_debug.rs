@@ -35,6 +35,7 @@ fn holding_jump_stays_bounded() {
     let data = load("hoppin.bsp");
     let bsp = Bsp::parse("hoppin", &data).expect("parse");
     let mut session = webrace_core::sim::Session::new(&bsp, 0).expect("session");
+    let spawn_z = session.origin()[2];
 
     let mut min_z = f32::INFINITY;
     let mut max_z = f32::NEG_INFINITY;
@@ -46,10 +47,10 @@ fn holding_jump_stays_bounded() {
         min_z = min_z.min(o[2]);
         max_z = max_z.max(o[2]);
     }
-    println!("holding jump 2s: z range [{min_z:.1}, {max_z:.1}] on_ground={}", session.on_ground());
-    // The player should never fly upward unboundedly: z should stay within a
-    // reasonable band around the spawn (~216 + a few jump heights).
-    assert!(max_z < 400.0, "player flew up too high: {max_z}");
-    assert!(min_z > -100.0, "player fell through floor: {min_z}");
+    println!("holding jump 2s: z range [{min_z:.1}, {max_z:.1}] spawn_z={spawn_z:.1} on_ground={}", session.on_ground());
+    // The player should never fly upward unboundedly nor fall through:
+    // z stays within a reasonable band of the spawn height.
+    assert!(max_z < spawn_z + 400.0, "player flew up too high: {max_z}");
+    assert!(min_z > spawn_z - 300.0, "player fell through floor: {min_z}");
 }
 

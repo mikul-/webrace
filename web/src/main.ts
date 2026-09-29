@@ -159,14 +159,20 @@ function setupResize() {
 
 function lockPointer() {
   const el = canvas as HTMLCanvasElement & {
-    requestPointerLock: () => void;
+    requestPointerLock: () => void | Promise<void>;
   };
   if (typeof el.requestPointerLock !== "function") {
     lockEl.textContent = "browser does not support pointer lock";
     return;
   }
   try {
-    el.requestPointerLock();
+    const r = el.requestPointerLock();
+    if (r && typeof (r as Promise<void>).catch === "function") {
+      (r as Promise<void>).catch(() => {
+        // Pointer lock refused (e.g. re-locking too soon after exit). Ignore;
+        // the user can click again.
+      });
+    }
   } catch (e) {
     lockEl.textContent = "lock failed: " + (e as Error).message;
   }
