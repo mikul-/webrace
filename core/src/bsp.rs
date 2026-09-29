@@ -43,8 +43,6 @@ pub const FACETYPE_PLANAR: i32 = 1;
 pub const FACETYPE_PATCH: i32 = 2;
 pub const FACETYPE_TRISURF: i32 = 3;
 
-const CONTENTS_SOLID: i32 = 1;
-
 pub const LIGHTMAP_W: usize = 128;
 pub const LIGHTMAP_H: usize = 128;
 pub const LIGHTMAP_BYTES: usize = 3;
@@ -358,20 +356,17 @@ fn parse_brushes(
 
     for bi in 0..numbrushes {
         let b = boff as usize + (firstbrush as usize + bi as usize) * DBRUSH_SIZE;
-        let _bsoff = read_i32(data, b) as u32;
+        let bsoff = read_i32(data, b) as u32;
         let bsnum = read_i32(data, b + 4) as u32;
-        let contents = read_i32(data, b + 8);
 
-        // Only solid brushes matter for pmove traces; skip triggers/water/etc.
-        // Playerclip is handled separately (kept here as solid for simplicity).
-        if contents & CONTENTS_SOLID == 0 && contents & 0x10000 == 0 {
-            continue;
-        }
-
+        // All brushes referenced by model 0 are structural (solid) world
+        // geometry. There is no per-brush contents field in `dbrush_t`
+        // (its third int is `shadernum`, a surface texture index), so we keep
+        // every brush — trigger/clip brushes live in separate models, not here.
         offsets.push(plane_ids.len() as u32);
         counts.push(bsnum);
         for s in 0..bsnum {
-            let sp = soff as usize + (_bsoff as usize + s as usize) * DBRUSHSIDE_SIZE;
+            let sp = soff as usize + (bsoff as usize + s as usize) * DBRUSHSIDE_SIZE;
             let planenum = read_i32(data, sp) as u32;
             plane_ids.push(planenum);
         }
