@@ -181,14 +181,16 @@ fn parse_drawable(
         let x = read_f32(data, p);
         let y = read_f32(data, p + 4);
         let z = read_f32(data, p + 8);
-        let (tu, tv) = (read_f32(data, p + 16), read_f32(data, p + 20));
-        let (lu, lv) = (read_f32(data, p + 24), read_f32(data, p + 28));
-        let (nx, ny, nz) = (read_f32(data, p + 32), read_f32(data, p + 36), read_f32(data, p + 40));
+        // dvertex_t: point[3](0-11) tex_st[2](12-19) lm_st[2](20-27)
+        //           normal[3](28-39) color[4]u8(40-43)
+        let (tu, tv) = (read_f32(data, p + 12), read_f32(data, p + 16));
+        let (lu, lv) = (read_f32(data, p + 20), read_f32(data, p + 24));
+        let (nx, ny, nz) = (read_f32(data, p + 28), read_f32(data, p + 32), read_f32(data, p + 36));
         let (r, g, b, a) = (
-            data[p + 44] as f32 / 255.0,
-            data[p + 45] as f32 / 255.0,
-            data[p + 46] as f32 / 255.0,
-            data[p + 47] as f32 / 255.0,
+            data[p + 40] as f32 / 255.0,
+            data[p + 41] as f32 / 255.0,
+            data[p + 42] as f32 / 255.0,
+            data[p + 43] as f32 / 255.0,
         );
         // q2t = (x, z, -y)
         rv.extend_from_slice(&[x, z, -y, tu, tv, lu, lv, nx, nz, -ny, r, g, b, a]);

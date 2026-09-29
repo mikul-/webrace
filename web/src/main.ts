@@ -14,6 +14,7 @@ const speedEl = document.getElementById("speed")!;
 const mapInput = document.getElementById("map") as HTMLInputElement;
 const playBtn = document.getElementById("play")!;
 const logEl = document.getElementById("log")!;
+const lockEl = document.getElementById("lock")!;
 const canvas = document.getElementById("view") as HTMLCanvasElement;
 
 let renderer: Renderer | null = null;
@@ -133,13 +134,20 @@ canvas.addEventListener("click", () => {
   }
 });
 
+// Also allow clicking anywhere (HUD elements are pointer-events:none).
+document.addEventListener("click", () => {
+  if (overlay.classList.contains("hidden") && document.pointerLockElement !== canvas) {
+    lockPointer();
+  }
+});
+
 document.addEventListener("pointerlockchange", () => {
   if (document.pointerLockElement === canvas) {
-    logEl.textContent = "";
-    log("mouse locked — WASD move · right-click jump · SPACE dash");
+    lockEl.textContent = "🔒 mouse locked — right-click jump · SPACE dash";
+    lockEl.style.color = "#5ce27a";
   } else {
-    log("mouse unlocked — click canvas to re-lock");
-    // Clear held keys so we don't keep moving while unlocked.
+    lockEl.textContent = "🔓 click to lock mouse";
+    lockEl.style.color = "#e8603a";
     for (const k of Object.keys(keys) as (keyof typeof keys)[]) keys[k] = false;
   }
 });

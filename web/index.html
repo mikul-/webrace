@@ -30,6 +30,7 @@
         right: 10px;
         color: #9aa3b2;
         font-variant-numeric: tabular-nums;
+        pointer-events: none;
       }
       #speed {
         position: fixed;
@@ -41,6 +42,15 @@
         font-variant-numeric: tabular-nums;
         font-size: 24px;
         opacity: 0.85;
+        pointer-events: none;
+      }
+      #lock {
+        position: fixed;
+        top: 8px;
+        left: 10px;
+        color: #9aa3b2;
+        font-size: 12px;
+        pointer-events: none;
       }
       #overlay {
         position: fixed;
@@ -88,6 +98,7 @@
     <div id="hud"></div>
     <div id="fps"></div>
     <div id="speed"></div>
+    <div id="lock"></div>
     <div id="overlay">
       <h1>webrace</h1>
       <p id="status">loading…</p>
