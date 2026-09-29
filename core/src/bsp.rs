@@ -261,10 +261,10 @@ fn parse_drawable(
         let firstvert = read_i32(data, f + 12) as usize;
         let firstelem = read_i32(data, f + 20) as usize;
         let numelems = read_i32(data, f + 24) as usize;
-        // Lightmap region for this face.
+        // Lightmap image for this face (lm_texnum). In QFusion, lm_st is
+        // stored normalized [0..1], spanning the whole lightmap — there is no
+        // per-face sub-region (lm_offset/lm_size are always 0).
         let lm_texnum = read_i32(data, f + 28);
-        let lm_ox = read_i32(data, f + 32) as f32;
-        let lm_oy = read_i32(data, f + 36) as f32;
 
         if facetype != FACETYPE_PLANAR && facetype != FACETYPE_TRISURF {
             continue;
@@ -279,12 +279,14 @@ fn parse_drawable(
 
         // Atlas placement of this lightmap image (grid of LIGHTMAP_W cells).
         let lm_count = lightmaps.len().max(1);
-        let atlas_cols = 4usize; // 4 x 128 = 512 wide
+        let atlas_cols = 4usize;
+        let atlas_rows = lightmap_atlas_rows(lm_count, atlas_cols);
         let (atlas_x, atlas_y) = lightmap_atlas_origin(lm_texnum, atlas_cols);
+        let atlas_w = (atlas_cols * LIGHTMAP_W) as f32;
+        let atlas_h = (atlas_rows * LIGHTMAP_H) as f32;
 
-        // Collect this face's vertex indices (element indices reference
-        // firstvert..firstvert+numverts), then emit de-indexed vertices.
-        let mut face_vert_indices: Vec<usize> = Vec::new();
+        // Collect this face's vertex indices, then emit de-indexed vertices.
+        let mut face_vert_indices: Vec<usize> = Vec::with_capacity(numelems);
         for e in 0..numelems {
             let ei = eoff as usize + (firstelem + e) * 4;
             let raw = read_i32(data, ei);
@@ -293,12 +295,10 @@ fn parse_drawable(
 
         for &vi in &face_vert_indices {
             let v = raw_v[vi];
-            // Lightmap UV (pixels within the 128x128 lightmap) + this face's
-            // offset, then scaled into atlas [0..1] space.
-            let lu = v[5] + lm_ox;
-            let lv = v[6] + lm_oy;
-            let au = (atlas_x as f32 + lu) / ((atlas_cols * LIGHTMAP_W) as f32);
-            let av = (atlas_y as f32 + lv) / (lightmap_atlas_rows(lm_count, atlas_cols) as f32 * LIGHTMAP_H as f32);
+            // v[5],v[6] = lm_st (normalized [0..1] within the lightmap).
+            // Map into the lightmap's atlas cell.
+            let au = (atlas_x as f32 + v[5] * LIGHTMAP_W as f32) / atlas_w;
+            let av = (atlas_y as f32 + v[6] * LIGHTMAP_H as f32) / atlas_h;
             // q2t = (x, z, -y); 14 floats per vertex:
             // pos(3) tex(2) lm(2) normal(3) color(4)
             rv.extend_from_slice(&[

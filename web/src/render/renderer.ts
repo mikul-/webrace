@@ -40,13 +40,13 @@ export class Renderer {
       uniform sampler2D u_lightmap;
       out vec4 outColor;
       void main() {
-        // Baked lightmap provides the actual lighting (soft shadows, AO).
-        // Multiply by vertex color (identity for most surfaces) and scale up
-        // ~2x since lightmaps are stored dark (16-step quantization).
+        // Baked lightmap provides actual lighting. Q3 lightmaps are stored
+        // dark (avg ~7/255) and are meant to multiply a surface texture; with
+        // no textures yet we lift them strongly so geometry is visible.
         vec3 lm = texture(u_lightmap, v_lm).rgb;
-        vec3 base = lm * v_color.rgb * 2.0;
-        // Clamp and add slight gamma-ish lift so dark corners are readable.
-        base = base / (base + vec3(1.0));
+        // Perceptual lift: sqrt compresses the dynamic range and brightens.
+        vec3 base = pow(lm * 8.0, vec3(0.62));
+        base = min(base, vec3(1.0));
         outColor = vec4(base, 1.0);
       }`;
 
