@@ -125,3 +125,13 @@ pub fn session_on_ground(id: usize) -> bool {
             .unwrap_or(false)
     })
 }
+
+/// Reset the player to the spawn point (race restart).
+#[wasm_bindgen]
+pub fn session_reset(id: usize) {
+    SESSIONS.with(|s| {
+        if let Some(Some(session)) = s.borrow_mut().get_mut(id) {
+            session.reset();
+        }
+    });
+}

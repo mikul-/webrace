@@ -29,6 +29,10 @@ pub const PM_WISHSPEED: f32 = 30.0;
 pub const WALK_SPEED: f32 = 160.0;
 pub const CROUCH_SPEED: f32 = 100.0;
 
+/// Warfork DEFAULT_JUMPSPEED (280; gs_public.h) and dash/walljump speeds.
+pub const JUMP_SPEED: f32 = 280.0;
+pub const DASH_SPEED: f32 = 450.0;
+
 pub const PM_DASH_UPSPEED: f32 = 174.0 * GRAVITY_COMPENSATE;
 pub const PM_WJ_UPSPEED: f32 = 330.0 * GRAVITY_COMPENSATE;
 pub const PM_WJ_BOUNCE: f32 = 0.3;

@@ -15,6 +15,8 @@ pub struct Session {
     angles: Angles,
     mouse: MouseConfig,
     held_cmd: Cmd,
+    spawn_origin: [f32; 3],
+    spawn_yaw: f32,
 }
 
 impl Session {
@@ -28,10 +30,13 @@ impl Session {
         let mut ps = PlayerState::default();
 
         // Place at a spawn point (or origin if none).
-        if let Some(sp) = bsp.spawns.get(spawn_index) {
-            ps.origin = sp.origin;
-            ps.viewangles = [0.0, sp.yaw, 0.0];
-        }
+        let (spawn_origin, spawn_yaw) = if let Some(sp) = bsp.spawns.get(spawn_index) {
+            (sp.origin, sp.yaw)
+        } else {
+            ([0.0, 0.0, 64.0], 0.0f32)
+        };
+        ps.origin = spawn_origin;
+        ps.viewangles = [0.0, spawn_yaw, 0.0];
 
         // Drop onto the ground.
         let mut pmove = Pmove::new(world, frametime);
@@ -49,7 +54,24 @@ impl Session {
                 m_pitch: 0.022,
             },
             held_cmd: Cmd::default(),
+            spawn_origin,
+            spawn_yaw,
         })
+    }
+
+    /// Reset the player back to the spawn point (race restart).
+    pub fn reset(&mut self) {
+        self.ps.origin = self.spawn_origin;
+        self.ps.velocity = [0.0, 0.0, 0.0];
+        self.ps.viewangles = [0.0, self.spawn_yaw, 0.0];
+        self.ps.doshtime = 0;
+        self.ps.wjtime = 0;
+        self.ps.on_ground = false;
+        self.ps.special_held = false;
+        self.ps.jump_held = false;
+        self.angles = Angles { yaw: self.spawn_yaw, ..Default::default() };
+        self.held_cmd = Cmd::default();
+        self.pmove.drop_to_ground(&mut self.ps);
     }
 
     pub fn set_sensitivity(&mut self, s: f32) {

@@ -101,6 +101,37 @@
         font-size: 11px;
         pointer-events: none;
       }
+      #crosshair {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        width: 18px;
+        height: 18px;
+        transform: translate(-50%, -50%);
+        pointer-events: none;
+        z-index: 5;
+      }
+      #crosshair::before,
+      #crosshair::after {
+        content: "";
+        position: absolute;
+        background: #5ce27a;
+        box-shadow: 0 0 1px #000, 0 0 1px #000;
+      }
+      #crosshair::before {
+        left: 50%;
+        top: 0;
+        width: 1px;
+        height: 100%;
+        transform: translateX(-50%);
+      }
+      #crosshair::after {
+        top: 50%;
+        left: 0;
+        height: 1px;
+        width: 100%;
+        transform: translateY(-50%);
+      }
     </style>
   </head>
   <body>
@@ -110,6 +141,7 @@
     <div id="fps"></div>
     <div id="speed"></div>
     <div id="lock"></div>
+    <div id="crosshair"></div>
     <div id="overlay">
       <h1>webrace</h1>
       <p id="status">loading…</p>

@@ -12,7 +12,7 @@ use crate::trace::World;
 use crate::{
     CROUCH_SPEED, DASHJUMP_TIMEDELAY, GRAVITY, PM_ACCELERATE, PM_AIRACCELERATE,
     PM_AIRCONTROL, PM_DASH_UPSPEED, PM_FRICTION,
-    PM_STRANGE_BUNNY_ACCEL, PM_WISHSPEED, PM_WJ_BOUNCE, PM_WJ_UPSPEED, WALK_SPEED,
+    PM_STRANGE_BUNNY_ACCEL, PM_WISHSPEED, PM_WJ_UPSPEED, WALK_SPEED,
 };
 
 pub const PM_DASHTIME_MASK: u32 = 0xffff;
@@ -215,8 +215,8 @@ impl Pmove {
     }
 
     fn jump(&mut self, ps: &mut PlayerState, _forward: [f32; 3]) {
-        // Warfork jump velocity (jumpPlayerSpeed = 270 * compensate).
-        let jump_speed = 270.0 * crate::GRAVITY_COMPENSATE;
+        // Warfork jump (DEFAULT_JUMPSPEED = 280 * gravity compensation).
+        let jump_speed = crate::JUMP_SPEED * crate::GRAVITY_COMPENSATE;
         if ps.velocity[2] > 100.0 {
             // double jump
             ps.velocity[2] += jump_speed;
@@ -354,21 +354,29 @@ impl Pmove {
         let n = tr.normal;
         ps.special_held = true;
 
-        // Reflect horizontal velocity off the wall, then ensure a minimum
-        // speed pushing away from it (Warfork walljump).
+        // Wall-dash: reflect the horizontal velocity off the wall (keeping
+        // magnitude), then ensure a minimum speed pushing away from it.
+        let entry_speed =
+            (ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]).sqrt();
         let dot = ps.velocity[0] * n[0] + ps.velocity[1] * n[1];
         let mut bounced = [
-            ps.velocity[0] - n[0] * dot * (1.0 + PM_WJ_BOUNCE),
-            ps.velocity[1] - n[1] * dot * (1.0 + PM_WJ_BOUNCE),
+            ps.velocity[0] - 2.0 * dot * n[0],
+            ps.velocity[1] - 2.0 * dot * n[1],
             ps.velocity[2],
         ];
-        // Push away from the wall along the normal (n points toward the
-        // player's side, i.e. away from the solid).
-        let min_speed = (WALK_SPEED + self.max_speed) * 0.5;
-        let away = bounced[0] * n[0] + bounced[1] * n[1];
-        if away < min_speed {
-            bounced[0] += n[0] * (min_speed - away);
-            bounced[1] += n[1] * (min_speed - away);
+        // Re-normalize the horizontal component to preserve entry speed (the
+        // wall-dash redirects but does not bleed speed going straight on).
+        let h_after =
+            (bounced[0] * bounced[0] + bounced[1] * bounced[1]).sqrt();
+        let target = entry_speed.max((WALK_SPEED + self.max_speed) * 0.5);
+        if h_after > 1.0 {
+            let s = target / h_after;
+            bounced[0] *= s;
+            bounced[1] *= s;
+        } else {
+            // Nearly stopped: push away along the wall normal.
+            bounced[0] = -n[0] * target;
+            bounced[1] = -n[1] * target;
         }
         if bounced[2] < PM_WJ_UPSPEED {
             bounced[2] = PM_WJ_UPSPEED;

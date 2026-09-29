@@ -233,6 +233,11 @@ window.addEventListener("keydown", (e) => {
   const k = KEYMAP[e.code];
   if (k && !e.repeat) keys[k] = true;
   if (e.code === "Space") e.preventDefault();
+
+  // 4 = restart the race (reset to spawn).
+  if (e.code === "Digit4" && !e.repeat) {
+    if (sessionId !== null) core.session_reset(sessionId);
+  }
 });
 window.addEventListener("keyup", (e) => {
   const k = KEYMAP[e.code];
@@ -293,14 +298,18 @@ function loop() {
     }
 
     const speed = core.session_speed(sessionId);
-    const pos = core.session_eye(sessionId) as unknown as Float32Array;
-    speedEl.textContent = `${Math.round(speed)} ups    ${pos[0].toFixed(1)}, ${pos[1].toFixed(1)}, ${pos[2].toFixed(1)}`;
+    speedEl.textContent = `${Math.round(speed)} ups`;
   }
 
   // Render.
   if (renderer && sessionId !== null) {
     const aspect = canvas.width / canvas.height;
-    const proj = perspective((75 * Math.PI) / 180, aspect, 8, 200000);
+    // Quake FOV: the cvar is the HORIZONTAL fov; the vertical fov is derived
+    // from the aspect ratio (tan(hfov/2) / aspect). Same model as Warfork/q3.
+    const HFOV_DEG = 140;
+    const hfov = (HFOV_DEG * Math.PI) / 180;
+    const vfov = 2 * Math.atan(Math.tan(hfov / 2) / aspect);
+    const proj = perspective(vfov, aspect, 8, 200000);
     const eye = core.session_eye(sessionId) as unknown as Float32Array;
     const angles = core.session_angles(sessionId) as unknown as Float32Array;
     const view = lookAt([eye[0], eye[1], eye[2]], angles[0], angles[1]);
