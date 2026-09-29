@@ -86,10 +86,12 @@ async function loadMap() {
     sessionId = core.session_new(mapId, 0);
 
     overlay.classList.add("hidden");
-    lockPointer();
     setStatus("");
-    log(`${name}: ${triCount} tris, ${brushCount} brushes — click to lock mouse`);
-    log("WASD move · SPACE dash/walljump · right-click jump · Shift/Ctrl crouch");
+    log(`${name}: ${triCount} tris, ${brushCount} brushes`);
+    log("CLICK the screen to lock mouse · WASD move · SPACE dash · right-click jump");
+
+    const eye = core.session_eye(sessionId) as unknown as Float32Array;
+    log(`spawn eye (render): ${[eye[0], eye[1], eye[2]].map((v) => v.toFixed(1)).join(", ")}`);
     requestAnimationFrame(loop);
   } catch (e) {
     setStatus(`load failed: ${(e as Error).message}`);
@@ -111,7 +113,18 @@ function setupResize() {
 // ---- Pointer lock + input ----
 
 function lockPointer() {
-  canvas.requestPointerLock?.({ unadjustedMovement: true });
+  const el = canvas as HTMLCanvasElement & {
+    requestPointerLock: (opts?: { unadjustedMovement: boolean }) => void | Promise<void>;
+  };
+  if (typeof el.requestPointerLock !== "function") return;
+  try {
+    const r = el.requestPointerLock({ unadjustedMovement: true });
+    if (r && typeof (r as Promise<void>).catch === "function") {
+      (r as Promise<void>).catch(() => {});
+    }
+  } catch {
+    el.requestPointerLock();
+  }
 }
 
 canvas.addEventListener("click", () => {
@@ -123,6 +136,11 @@ canvas.addEventListener("click", () => {
 document.addEventListener("pointerlockchange", () => {
   if (document.pointerLockElement === canvas) {
     logEl.textContent = "";
+    log("mouse locked — WASD move · right-click jump · SPACE dash");
+  } else {
+    log("mouse unlocked — click canvas to re-lock");
+    // Clear held keys so we don't keep moving while unlocked.
+    for (const k of Object.keys(keys) as (keyof typeof keys)[]) keys[k] = false;
   }
 });
 
@@ -210,15 +228,16 @@ function loop() {
     }
 
     const speed = core.session_speed(sessionId);
-    speedEl.textContent = `${Math.round(speed)} ups`;
+    const pos = core.session_eye(sessionId) as unknown as Float32Array;
+    speedEl.textContent = `${Math.round(speed)} ups    ${pos[0].toFixed(1)}, ${pos[1].toFixed(1)}, ${pos[2].toFixed(1)}`;
   }
 
   // Render.
   if (renderer && sessionId !== null) {
     const aspect = canvas.width / canvas.height;
     const proj = perspective((75 * Math.PI) / 180, aspect, 8, 200000);
-    const eye = core.session_eye(sessionId);
-    const angles = core.session_angles(sessionId);
+    const eye = core.session_eye(sessionId) as unknown as Float32Array;
+    const angles = core.session_angles(sessionId) as unknown as Float32Array;
     const view = lookAt([eye[0], eye[1], eye[2]], angles[0], angles[1]);
     renderer.draw(multiply(proj, view));
   }

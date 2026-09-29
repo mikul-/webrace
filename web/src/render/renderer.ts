@@ -73,7 +73,10 @@ export class Renderer {
     gl.vertexAttribPointer(4, 4, gl.FLOAT, false, stride, 56);
 
     gl.enable(gl.DEPTH_TEST);
-    gl.enable(gl.CULL_FACE);
+    // Culling disabled for now: the q2t reflection may flip winding, and
+    // Quake BSP front-face convention differs from WebGL's default. Re-enable
+    // once winding is verified.
+    // gl.enable(gl.CULL_FACE);
     gl.clearColor(0.04, 0.05, 0.07, 1);
   }
 

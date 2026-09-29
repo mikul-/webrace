@@ -89,7 +89,7 @@ pub fn session_eye(id: usize) -> Vec<f32> {
             .get(id)
             .and_then(|o| o.as_ref())
             .map(|s| s.eye().to_vec())
-            .unwrap_or_default()
+            .unwrap_or_else(|| vec![0.0, 0.0, 0.0])
     })
 }
 
@@ -100,7 +100,7 @@ pub fn session_angles(id: usize) -> Vec<f32> {
             .get(id)
             .and_then(|o| o.as_ref())
             .map(|s| vec![s.yaw(), s.pitch()])
-            .unwrap_or_default()
+            .unwrap_or_else(|| vec![0.0, 0.0])
     })
 }
 
