@@ -123,6 +123,13 @@ impl Pmove {
     /// ground — this prevents the player from "sticking" and floating when
     /// pressed against walls. Also records the ground surface's flags (slick).
     fn grounded(&mut self, ps: &mut PlayerState) -> bool {
+        // Never grounded while rising — a player who just jumped is airborne
+        // even if their box still overlaps the floor's down-trace margin.
+        if ps.velocity[2] > 20.0 {
+            ps.ground_flags = 0;
+            return false;
+        }
+
         let down = 2.0;
         let start = ps.origin;
         let end = [ps.origin[0], ps.origin[1], ps.origin[2] - down];
