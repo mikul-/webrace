@@ -634,10 +634,13 @@ impl Pmove {
             return;
         }
 
-        // Blocked — try stair-stepping if moving mostly horizontally.
+        // Blocked — try stair-stepping only when running into a WALL (near
+        // vertical surface), not when descending a floor/slope. Otherwise
+        // going down ramps would try to "step up" every tick (bumpy).
+        let is_wall = tr.normal[2].abs() < 0.7;
         let horizontal =
             (ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]).sqrt();
-        if horizontal > 1.0 && self.try_step_up(ps, start, mins, maxs, end) {
+        if is_wall && horizontal > 1.0 && self.try_step_up(ps, start, mins, maxs, end) {
             return;
         }
 
