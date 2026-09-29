@@ -1,0 +1,11 @@
+{
+  "name": "webrace-root",
+  "private": true,
+  "scripts": {
+    "wasm": "./scripts/build-wasm.sh",
+    "maps": "node server/map-server.mjs",
+    "dev": "npm --prefix web run dev",
+    "build": "npm --prefix web run build",
+    "test": "cargo test --manifest-path core/Cargo.toml"
+  }
+}
