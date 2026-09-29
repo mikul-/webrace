@@ -35,6 +35,8 @@ pub struct PlayerState {
     pub on_ground: bool,
     /// Surface flags of the ground currently stood on (SURF_SLICK etc.).
     pub ground_flags: i32,
+    /// Normal of the ground plane currently stood on (for slope sliding).
+    pub ground_normal: [f32; 3],
     // Velocity magnitude last tick (for overbounce / speed display).
     pub speed: f32,
 }
@@ -52,6 +54,7 @@ impl Default for PlayerState {
             jump_held: false,
             on_ground: false,
             ground_flags: 0,
+            ground_normal: [0.0, 0.0, 1.0],
             speed: 0.0,
         }
     }
@@ -127,6 +130,7 @@ impl Pmove {
         // even if their box still overlaps the floor's down-trace margin.
         if ps.velocity[2] > 20.0 {
             ps.ground_flags = 0;
+            ps.ground_normal = [0.0, 0.0, 1.0];
             return false;
         }
 
@@ -142,13 +146,16 @@ impl Pmove {
         // Grounded only if we actually hit something walkable (flat enough).
         if tr.fraction >= 1.0 {
             ps.ground_flags = 0;
+            ps.ground_normal = [0.0, 0.0, 1.0];
             return false;
         }
         if tr.normal[2] > 0.7 {
             ps.ground_flags = tr.surface_flags;
+            ps.ground_normal = tr.normal;
             return true;
         }
         ps.ground_flags = 0;
+        ps.ground_normal = [0.0, 0.0, 1.0];
         false
     }
 
@@ -204,9 +211,21 @@ impl Pmove {
             self.air_move(ps, forward, right, fwd_push, side_push);
         }
 
-        // Gravity.
-        if !ps.on_ground {
-            ps.velocity[2] -= GRAVITY * self.frametime;
+        // Gravity. Always applied; the ground-plane clip (below) holds the
+        // player on the floor and redirects the pull into downhill motion on
+        // slopes (which is what slick ramps need for acceleration).
+        ps.velocity[2] -= GRAVITY * self.frametime;
+
+        // When grounded, clip velocity against the ground plane so the player
+        // stays on the surface and the gravity component becomes slide motion.
+        if ps.on_ground {
+            let n = ps.ground_normal;
+            let dot = ps.velocity[0] * n[0] + ps.velocity[1] * n[1] + ps.velocity[2] * n[2];
+            if dot < 0.0 {
+                ps.velocity[0] -= n[0] * dot;
+                ps.velocity[1] -= n[1] * dot;
+                ps.velocity[2] -= n[2] * dot;
+            }
         }
 
         // Integrate position with collision.
