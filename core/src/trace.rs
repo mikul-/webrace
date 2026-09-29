@@ -15,6 +15,8 @@ pub struct TraceResult {
     pub normal: [f32; 3],
     pub all_solid: bool,
     pub start_solid: bool,
+    /// Surface flags (SURF_SLICK etc.) of the surface that was hit (0 if none).
+    pub surface_flags: i32,
 }
 
 /// Player collision box (Warfork default bounding box, in world units).
@@ -22,11 +24,14 @@ pub const PLAYER_MINS: [f32; 3] = [-16.0, -16.0, -24.0];
 pub const PLAYER_MAXS: [f32; 3] = [16.0, 16.0, 40.0];
 
 pub struct World {
-    // Reference to the collision brushes.
     pub brush_plane_offsets: Vec<u32>,
     pub brush_plane_count: Vec<u32>,
     pub brush_plane_ids: Vec<u32>,
+    /// Shader index of each collision brush (parallel to the brush arrays).
+    pub brush_shaders: Vec<i32>,
     pub planes: Vec<Plane>,
+    /// Surface flags (SURF_SLICK etc.) per shader, used for slick/gameplay.
+    pub shader_flags: Vec<i32>,
 }
 
 impl World {
@@ -35,7 +40,9 @@ impl World {
             brush_plane_offsets: bsp.brush_plane_offsets.clone(),
             brush_plane_count: bsp.brush_plane_count.clone(),
             brush_plane_ids: bsp.brush_plane_ids.clone(),
+            brush_shaders: bsp.brush_shaders.clone(),
             planes: bsp.planes.clone(),
+            shader_flags: bsp.shader_flags.clone(),
         }
     }
 }
@@ -53,6 +60,7 @@ impl World {
     ) -> TraceResult {
         let mut best_frac = 1.0f32;
         let mut best_normal = [0.0f32; 3];
+        let mut best_surface_flags = 0i32;
         let mut start_solid = false;
         let all_solid = true;
 
@@ -82,6 +90,12 @@ impl World {
         for i in 0..self.brush_plane_offsets.len() {
             let offset = self.brush_plane_offsets[i] as usize;
             let count = self.brush_plane_count[i] as usize;
+            // Surface flags of this brush (via its shader), used for slick etc.
+            let brush_surface_flags = self
+                .brush_shaders
+                .get(i)
+                .and_then(|&s| self.shader_flags.get(s as usize).copied())
+                .unwrap_or(0);
 
             let mut enter = -f32::INFINITY;
             let mut exit = f32::INFINITY;
@@ -150,6 +164,7 @@ impl World {
                 // The box is fully inside this brush at the start position.
                 start_solid = true;
                 best_normal = deepest_normal;
+                best_surface_flags = brush_surface_flags;
                 break;
             }
 
@@ -167,18 +182,32 @@ impl World {
                     if best_frac > 0.0 {
                         best_frac = 0.0;
                         best_normal = enter_normal;
+                        best_surface_flags = brush_surface_flags;
                     }
                 } else if enter < best_frac {
                     best_frac = enter;
                     best_normal = enter_normal;
+                    best_surface_flags = brush_surface_flags;
                 }
             }
         }
 
         if start_solid {
-            return TraceResult { fraction: 0.0, normal: [0.0, 0.0, 1.0], all_solid, start_solid: true };
+            return TraceResult {
+                fraction: 0.0,
+                normal: [0.0, 0.0, 1.0],
+                all_solid,
+                start_solid: true,
+                surface_flags: best_surface_flags,
+            };
         }
 
-        TraceResult { fraction: best_frac, normal: best_normal, all_solid, start_solid: false }
+        TraceResult {
+            fraction: best_frac,
+            normal: best_normal,
+            all_solid,
+            start_solid: false,
+            surface_flags: best_surface_flags,
+        }
     }
 }

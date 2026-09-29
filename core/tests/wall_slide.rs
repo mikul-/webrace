@@ -27,6 +27,8 @@ fn world_with_wall() -> World {
         brush_plane_offsets: vec![0, 6],
         brush_plane_count: vec![6, 6],
         brush_plane_ids: (0..12).collect(),
+        brush_shaders: vec![0, 0],
+        shader_flags: vec![0],
         planes,
     }
 }

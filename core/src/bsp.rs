@@ -62,8 +62,12 @@ pub struct Bsp {
     pub brush_plane_offsets: Vec<u32>,
     pub brush_plane_count: Vec<u32>,
     pub brush_plane_ids: Vec<u32>,
+    /// Shader index of each collision brush (parallel to the brush arrays).
+    pub brush_shaders: Vec<i32>,
     pub planes: Vec<Plane>,
     pub shaders: Vec<String>,
+    /// Surface flags (SURF_SLICK etc.) per shader.
+    pub shader_flags: Vec<i32>,
     pub spawns: Vec<SpawnPoint>,
     /// Individual lightmap images (each LIGHTMAP_W×LIGHTMAP_H×3 bytes).
     pub lightmaps: Vec<Vec<u8>>,
@@ -113,12 +117,12 @@ impl Bsp {
             base += 8;
         }
 
-        let shaders = parse_shaders(data, &lumps[LUMP_SHADERREFS])?;
+        let (shaders, shader_flags) = parse_shaders(data, &lumps[LUMP_SHADERREFS])?;
         let planes = parse_planes(data, &lumps[LUMP_PLANES]);
         let lightmaps = parse_lightmaps(data, &lumps[LUMP_LIGHTING]);
         let (positions, indices, chunks) =
             parse_drawable(data, &lumps, &shaders, &lightmaps)?;
-        let (brush_plane_offsets, brush_plane_count, brush_plane_ids) =
+        let (brush_plane_offsets, brush_plane_count, brush_plane_ids, brush_shaders) =
             parse_brushes(data, &lumps)?;
         let spawns = parse_spawns(data, &lumps[LUMP_ENTITIES]);
         let (lightmap_atlas, atlas_w, atlas_h) = build_lightmap_atlas(&lightmaps);
@@ -131,8 +135,10 @@ impl Bsp {
             brush_plane_offsets,
             brush_plane_count,
             brush_plane_ids,
+            brush_shaders,
             planes,
             shaders,
+            shader_flags,
             spawns,
             lightmaps,
             lightmap_atlas,
@@ -147,19 +153,22 @@ impl Bsp {
     }
 }
 
-fn parse_shaders(data: &[u8], lump: &(u32, u32)) -> Result<Vec<String>, String> {
+fn parse_shaders(data: &[u8], lump: &(u32, u32)) -> Result<(Vec<String>, Vec<i32>), String> {
     let (off, len) = *lump;
     let n = len as usize / DSHADERREF_SIZE;
-    let mut out = Vec::with_capacity(n);
+    let mut names = Vec::with_capacity(n);
+    let mut flags = Vec::with_capacity(n);
     let mut i = off as usize;
     for _ in 0..n {
         let name_bytes = &data[i..i + 64];
         let end = name_bytes.iter().position(|&b| b == 0).unwrap_or(64);
         let name = String::from_utf8_lossy(&name_bytes[..end]).into_owned();
-        out.push(name);
+        let surf_flags = read_i32(data, i + 64);
+        names.push(name);
+        flags.push(surf_flags);
         i += DSHADERREF_SIZE;
     }
-    Ok(out)
+    Ok((names, flags))
 }
 
 fn parse_planes(data: &[u8], lump: &(u32, u32)) -> Vec<Plane> {
@@ -334,7 +343,7 @@ fn lightmap_atlas_rows(lm_count: usize, atlas_cols: usize) -> usize {
 fn parse_brushes(
     data: &[u8],
     lumps: &[(u32, u32)],
-) -> Result<(Vec<u32>, Vec<u32>, Vec<u32>), String> {
+) -> Result<(Vec<u32>, Vec<u32>, Vec<u32>, Vec<i32>), String> {
     let (_moff, mlen) = lumps[LUMP_MODELS];
     let (boff, blen) = lumps[LUMP_BRUSHES];
     let (soff, slen) = lumps[LUMP_BRUSHSIDES];
@@ -343,8 +352,6 @@ fn parse_brushes(
         return Err("missing model lump".into());
     }
     // Model 0 is the world; its `firstbrush`/`numbrushes` give the world hull.
-    // dmodel_t layout: mins[3] maxs[3] firstface numfaces firstbrush numbrushes
-    // (10 ints = 40 bytes).
     let firstbrush = read_i32(data, _moff as usize + 32) as u32;
     let numbrushes = read_i32(data, _moff as usize + 36) as u32;
     let _nbrushes_total = blen as usize / DBRUSH_SIZE;
@@ -353,18 +360,20 @@ fn parse_brushes(
     let mut offsets = Vec::new();
     let mut counts = Vec::new();
     let mut plane_ids = Vec::new();
+    let mut shaders = Vec::new();
 
     for bi in 0..numbrushes {
         let b = boff as usize + (firstbrush as usize + bi as usize) * DBRUSH_SIZE;
         let bsoff = read_i32(data, b) as u32;
         let bsnum = read_i32(data, b + 4) as u32;
+        let shadernum = read_i32(data, b + 8);
 
         // All brushes referenced by model 0 are structural (solid) world
-        // geometry. There is no per-brush contents field in `dbrush_t`
-        // (its third int is `shadernum`, a surface texture index), so we keep
-        // every brush — trigger/clip brushes live in separate models, not here.
+        // geometry. The brush's `shadernum` names its surface texture, whose
+        // surfaceflags (SURF_SLICK etc.) drive gameplay (e.g. ice sliding).
         offsets.push(plane_ids.len() as u32);
         counts.push(bsnum);
+        shaders.push(shadernum);
         for s in 0..bsnum {
             let sp = soff as usize + (bsoff as usize + s as usize) * DBRUSHSIDE_SIZE;
             let planenum = read_i32(data, sp) as u32;
@@ -372,7 +381,7 @@ fn parse_brushes(
         }
     }
 
-    Ok((offsets, counts, plane_ids))
+    Ok((offsets, counts, plane_ids, shaders))
 }
 
 /// Parse player spawn points from the entity lump (text key/value blocks).

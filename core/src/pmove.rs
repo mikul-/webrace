@@ -33,6 +33,8 @@ pub struct PlayerState {
     pub special_held: bool,
     pub jump_held: bool,
     pub on_ground: bool,
+    /// Surface flags of the ground currently stood on (SURF_SLICK etc.).
+    pub ground_flags: i32,
     // Velocity magnitude last tick (for overbounce / speed display).
     pub speed: f32,
 }
@@ -49,10 +51,14 @@ impl Default for PlayerState {
             special_held: false,
             jump_held: false,
             on_ground: false,
+            ground_flags: 0,
             speed: 0.0,
         }
     }
 }
+
+/// Surface flags (mirrors QFusion qfiles.h).
+pub const SURF_SLICK: i32 = 0x2;
 
 pub struct Pmove {
     pub world: World,
@@ -115,8 +121,8 @@ impl Pmove {
     /// Whether the player's feet are resting on a floor-like surface (a hit
     /// whose normal points mostly up). A wall or steep slope does NOT count as
     /// ground — this prevents the player from "sticking" and floating when
-    /// pressed against walls.
-    fn grounded(&mut self, ps: &PlayerState) -> bool {
+    /// pressed against walls. Also records the ground surface's flags (slick).
+    fn grounded(&mut self, ps: &mut PlayerState) -> bool {
         let down = 2.0;
         let start = ps.origin;
         let end = [ps.origin[0], ps.origin[1], ps.origin[2] - down];
@@ -128,10 +134,15 @@ impl Pmove {
         );
         // Grounded only if we actually hit something walkable (flat enough).
         if tr.fraction >= 1.0 {
+            ps.ground_flags = 0;
             return false;
         }
-        // Normal points up (walkable surface: |normal.z| ~ 1, i.e. not a wall).
-        tr.normal[2] > 0.7
+        if tr.normal[2] > 0.7 {
+            ps.ground_flags = tr.surface_flags;
+            return true;
+        }
+        ps.ground_flags = 0;
+        false
     }
 
     /// Advance one tick.
@@ -279,9 +290,9 @@ impl Pmove {
         ps: &mut PlayerState,
         cmd: &Cmd,
         right: [f32; 3],
-        _forward: [f32; 3],
+        forward: [f32; 3],
         side_push: f32,
-        _fwd_push: f32,
+        fwd_push: f32,
     ) {
         if !(cmd.buttons & crate::input::BUTTON_SPECIAL != 0) {
             return;
@@ -293,49 +304,75 @@ impl Pmove {
             return;
         }
 
-        // Determine which wall we're pushing against by tracing sideways.
-        let dir = if side_push != 0.0 {
-            [right[0] * side_push.signum(), right[1] * side_push.signum(), 0.0]
+        // Direction to check for a wall: the player's horizontal movement
+        // direction, falling back to their input direction.
+        let hvel = [ps.velocity[0], ps.velocity[1]];
+        let hlen = (hvel[0] * hvel[0] + hvel[1] * hvel[1]).sqrt();
+        let mut dir = if hlen > 20.0 {
+            [hvel[0] / hlen, hvel[1] / hlen, 0.0]
         } else {
-            return;
+            // Use input direction (forward/strafe), else face forward.
+            let mut d = [
+                forward[0] * fwd_push + right[0] * side_push,
+                forward[1] * fwd_push + right[1] * side_push,
+                0.0,
+            ];
+            let l = (d[0] * d[0] + d[1] * d[1]).sqrt();
+            if l > 0.0 {
+                d[0] /= l;
+                d[1] /= l;
+                d
+            } else {
+                [forward[0], forward[1], 0.0]
+            }
         };
 
+        // Also probe the opposite direction (a wall behind still lets you
+        // wall-jump off it by pressing special into it). Prefer the movement
+        // direction, then check both.
         let start = ps.origin;
-        let end = [start[0] + dir[0] * 32.0, start[1] + dir[1] * 32.0, start[2]];
-        let tr = self.world.trace(
+        let mut tr = self.world.trace(
             start,
             crate::trace::PLAYER_MINS,
             crate::trace::PLAYER_MAXS,
-            end,
+            [start[0] + dir[0] * 32.0, start[1] + dir[1] * 32.0, start[2]],
         );
         if tr.fraction >= 1.0 {
-            return; // no wall
+            // Try the opposite horizontal direction.
+            dir = [-dir[0], -dir[1], 0.0];
+            tr = self.world.trace(
+                start,
+                crate::trace::PLAYER_MINS,
+                crate::trace::PLAYER_MAXS,
+                [start[0] + dir[0] * 32.0, start[1] + dir[1] * 32.0, start[2]],
+            );
+            if tr.fraction >= 1.0 {
+                return; // no wall nearby
+            }
         }
 
         let n = tr.normal;
         ps.special_held = true;
 
-        // Wall-jump: bounce off the wall (horizontal refliction + upward).
+        // Reflect horizontal velocity off the wall, then ensure a minimum
+        // speed pushing away from it (Warfork walljump).
         let dot = ps.velocity[0] * n[0] + ps.velocity[1] * n[1];
         let mut bounced = [
-            ps.velocity[0] - 2.0 * dot * n[0],
-            ps.velocity[1] - 2.0 * dot * n[1],
+            ps.velocity[0] - n[0] * dot * (1.0 + PM_WJ_BOUNCE),
+            ps.velocity[1] - n[1] * dot * (1.0 + PM_WJ_BOUNCE),
             ps.velocity[2],
         ];
-        // warfork: horizontal speed is scaled by bounce factor + min speed.
-        let h = (bounced[0] * bounced[0] + bounced[1] * bounced[1]).sqrt();
+        // Push away from the wall along the normal (n points toward the
+        // player's side, i.e. away from the solid).
         let min_speed = (WALK_SPEED + self.max_speed) * 0.5;
-        if h < min_speed {
-            let hh = if h > 0.0 { h } else { 1.0 };
-            bounced[0] *= min_speed / hh;
-            bounced[1] *= min_speed / hh;
+        let away = bounced[0] * n[0] + bounced[1] * n[1];
+        if away < min_speed {
+            bounced[0] += n[0] * (min_speed - away);
+            bounced[1] += n[1] * (min_speed - away);
         }
         if bounced[2] < PM_WJ_UPSPEED {
             bounced[2] = PM_WJ_UPSPEED;
         }
-        // Reduce horizontal velocity on bounce.
-        bounced[0] *= PM_WJ_BOUNCE;
-        bounced[1] *= PM_WJ_BOUNCE;
 
         ps.velocity = bounced;
         ps.wjtime = crate::WALLJUMP_TIMEDELAY;
@@ -349,18 +386,22 @@ impl Pmove {
         fwd: f32,
         side: f32,
     ) {
-        // Apply ground friction (Quake PM_Friction).
-        let speed = (ps.velocity[0] * ps.velocity[0]
-            + ps.velocity[1] * ps.velocity[1]
-            + ps.velocity[2] * ps.velocity[2])
-            .sqrt();
-        if speed > 0.0 {
-            let control = if speed < 1.0 { 1.0 } else { speed };
-            let drop = control * PM_FRICTION * self.frametime;
-            let newspeed = (speed - drop).max(0.0) / speed.max(0.0001);
-            ps.velocity[0] *= newspeed;
-            ps.velocity[1] *= newspeed;
-            ps.velocity[2] *= newspeed;
+        // Apply ground friction (Quake PM_Friction). On slick surfaces (ice),
+        // friction is skipped so the player slides.
+        let slick = ps.ground_flags & SURF_SLICK != 0;
+        if !slick {
+            let speed = (ps.velocity[0] * ps.velocity[0]
+                + ps.velocity[1] * ps.velocity[1]
+                + ps.velocity[2] * ps.velocity[2])
+                .sqrt();
+            if speed > 0.0 {
+                let control = if speed < 1.0 { 1.0 } else { speed };
+                let drop = control * PM_FRICTION * self.frametime;
+                let newspeed = (speed - drop).max(0.0) / speed.max(0.0001);
+                ps.velocity[0] *= newspeed;
+                ps.velocity[1] *= newspeed;
+                ps.velocity[2] *= newspeed;
+            }
         }
 
         // Project forward/right onto the flat plane and build the wish dir.

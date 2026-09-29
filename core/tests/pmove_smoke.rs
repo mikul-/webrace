@@ -24,6 +24,8 @@ fn flat_world() -> World {
         brush_plane_offsets: vec![0],
         brush_plane_count: vec![6],
         brush_plane_ids,
+        brush_shaders: vec![0],
+        shader_flags: vec![0],
         planes,
     }
 }
