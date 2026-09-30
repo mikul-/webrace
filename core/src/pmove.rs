@@ -157,7 +157,11 @@ impl Pmove {
             ps.ground_normal = [0.0, 0.0, 1.0];
             return false;
         }
-        if tr.normal[2] > 0.7 {
+        // Walkable slope (up to ~45°), or a slick surface which the player can
+        // slide along even when steeper (defrag ramps are often 45-80°).
+        let is_slick = tr.surface_flags & SURF_SLICK != 0;
+        let min_nz = if is_slick { 0.2 } else { 0.7 };
+        if tr.normal[2] > min_nz {
             ps.ground_flags = tr.surface_flags;
             ps.ground_normal = tr.normal;
             return true;
@@ -498,7 +502,10 @@ impl Pmove {
         let speed_cap = if ps.crouched { crate::CROUCH_SPEED } else { self.max_speed };
         wishspeed = wishspeed.min(speed_cap);
 
-        self.accelerate(ps, wishvel, wishspeed, PM_ACCELERATE);
+        // On slick surfaces you have little ground control (Warfork uses
+        // airaccelerate=1 rather than pm_accelerate=12), so you keep sliding.
+        let accel = if ps.ground_flags & SURF_SLICK != 0 { crate::PM_AIRACCELERATE } else { PM_ACCELERATE };
+        self.accelerate(ps, wishvel, wishspeed, accel);
     }
 
     fn air_move(
