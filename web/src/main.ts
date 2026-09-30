@@ -239,8 +239,10 @@ canvas.addEventListener("click", () => {
   }
 });
 
-// Also allow clicking anywhere (HUD elements are pointer-events:none).
+// Also allow clicking anywhere (HUD elements are pointer-events:none), but
+// NOT while the menu is open — menu clicks must not re-lock the mouse.
 document.addEventListener("click", () => {
+  if (menu?.isOpen()) return;
   if (overlay.classList.contains("hidden") && document.pointerLockElement !== canvas) {
     lockEl.textContent = "requesting pointer lock…";
     lockPointer();
