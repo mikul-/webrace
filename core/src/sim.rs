@@ -90,12 +90,20 @@ impl Session {
 
         let yaw = ps.viewangles[1];
         let race = Race::new(bsp.race_gates.clone());
-        // The save zone starts as the first gate that is a Start (or any gate).
+        // The save zone is a generous box around the start gate trigger (the
+        // area near the start line). We expand the trigger's thin AABB so the
+        // player can stand anywhere near the start and set a custom spawn.
+        const SAVE_MARGIN: f32 = 256.0;
         let save_zone = bsp
             .race_gates
             .iter()
             .find(|g| g.kind == RaceGateKind::Start)
-            .map(|g| [g.mins, g.maxs]);
+            .map(|g| {
+                [
+                    [g.mins[0] - SAVE_MARGIN, g.mins[1] - SAVE_MARGIN, g.mins[2] - SAVE_MARGIN],
+                    [g.maxs[0] + SAVE_MARGIN, g.maxs[1] + SAVE_MARGIN, g.maxs[2] + SAVE_MARGIN],
+                ]
+            });
 
         Ok(Session {
             pmove,
