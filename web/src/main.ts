@@ -395,8 +395,7 @@ function loop() {
     }
 
     const speed = core.session_speed(sessionId);
-    const eye = core.session_eye(sessionId) as unknown as Float32Array;
-    speedEl.textContent = `${Math.round(speed)} ups    ${eye[0].toFixed(1)}, ${eye[1].toFixed(1)}, ${eye[2].toFixed(1)}`;
+    speedEl.textContent = `${Math.round(speed)} ups`;
 
     // Race timer display.
     const ticks = core.session_race_ticks(sessionId);
