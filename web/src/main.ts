@@ -9,6 +9,7 @@ import { api } from "./base";
 import { loadTexture } from "./render/textures";
 import { getIdentity, registerNickname, submitTime } from "./net/leaderboard";
 import { Menu } from "./ui/menu";
+import { MovementHud } from "./ui/movement_hud";
 import { BindMap, DEFAULT_BINDS, codeToAction, mouseButtonToCode, Action } from "./binds";
 import init, * as core from "../pkg/webrace_core.js";
 
@@ -37,6 +38,7 @@ let fov = 140; // horizontal FOV (updated by the settings menu)
 let menu: Menu | null = null;
 let binds: BindMap = { ...DEFAULT_BINDS };
 let actionByCode = codeToAction(binds);
+const moveHud = new MovementHud();
 
 // Key state (held actions).
 const keys: Record<string, boolean> = {
@@ -396,6 +398,10 @@ function loop() {
 
     const speed = core.session_speed(sessionId);
     speedEl.textContent = `${Math.round(speed)} ups`;
+
+    // Movement HUD (strafe/bunny indicators + accel bar).
+    const hint = core.session_movement_hint(sessionId) as unknown as Float32Array;
+    moveHud.update(hint);
 
     // Race timer display.
     const ticks = core.session_race_ticks(sessionId);

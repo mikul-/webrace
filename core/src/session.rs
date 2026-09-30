@@ -115,6 +115,18 @@ pub fn session_speed(id: usize) -> f32 {
     })
 }
 
+/// Movement HUD data (8 floats): velocity[3], wishdir[3], speed, accel.
+#[wasm_bindgen]
+pub fn session_movement_hint(id: usize) -> Vec<f32> {
+    SESSIONS.with(|s| {
+        s.borrow()
+            .get(id)
+            .and_then(|o| o.as_ref())
+            .map(|s| s.movement_hint())
+            .unwrap_or_else(|| vec![0.0; 8])
+    })
+}
+
 #[wasm_bindgen]
 pub fn session_on_ground(id: usize) -> bool {
     SESSIONS.with(|s| {

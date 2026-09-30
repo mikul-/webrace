@@ -151,6 +151,39 @@
       #timer:empty {
         display: none;
       }
+      #movehud {
+        position: fixed;
+        top: calc(50% + 48px);
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        pointer-events: none;
+        z-index: 5;
+      }
+      #accel-bar {
+        width: 140px;
+        height: 6px;
+        background: #1a1e26;
+        border: 1px solid #2a3040;
+        overflow: hidden;
+      }
+      #accel-fill {
+        width: 50%;
+        height: 100%;
+        background: #3a3f4a;
+        transition: background 0.05s;
+      }
+      #strafe-hud {
+        display: block;
+        filter: drop-shadow(0 1px 1px #000);
+      }
+      #strafe-hud polygon,
+      #strafe-hud line {
+        transition: fill 0.05s, stroke 0.05s;
+      }
       #menu {
         position: fixed;
         inset: 0;
@@ -475,6 +508,14 @@
     <div id="lock"></div>
     <div id="crosshair"></div>
     <div id="timer"></div>
+    <div id="movehud">
+      <div id="accel-bar"><div id="accel-fill"></div></div>
+      <svg id="strafe-hud" width="180" height="40" viewBox="0 0 180 40">
+        <polygon id="strafe-left" points="60,20 78,10 78,30" fill="#3a3f4a" />
+        <polygon id="strafe-right" points="120,20 102,10 102,30" fill="#3a3f4a" />
+        <line id="bunny-line" x1="90" y1="4" x2="90" y2="36" stroke="#3a3f4a" stroke-width="3" />
+      </svg>
+    </div>
     <div id="overlay">
       <h1>webrace</h1>
       <p id="status">loading…</p>

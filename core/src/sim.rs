@@ -345,6 +345,44 @@ impl Session {
     pub fn origin(&self) -> [f32; 3] { self.ps.origin }
     pub fn velocity(&self) -> [f32; 3] { self.ps.velocity }
 
+    /// Movement HUD diagnostics: the data the client needs to render strafe /
+    /// bunny turn indicators and an acceleration bar.
+    ///
+    /// Returns (for the JS side, 8 floats):
+    ///   [0..2] = horizontal velocity (vx, vy, 0)
+    ///   [3..5] = horizontal wish direction (normalized), or (0,0,0) if no input
+    ///   [6]    = current horizontal speed
+    ///   [7]    = signed accel: dot(velocity, wishdir) (positive = gaining)
+    pub fn movement_hint(&self) -> Vec<f32> {
+        let yaw = self.ps.viewangles[1];
+        let (sy, cy) = yaw.sin_cos();
+        let forward = [cy, sy];
+        let right = [sy, -cy];
+
+        let cmd = &self.held_cmd;
+        let fwd = cmd.forward as f32 / 127.0;
+        let strafe = cmd.right as f32 / 127.0;
+
+        let mut wx = forward[0] * fwd + right[0] * strafe;
+        let mut wy = forward[1] * fwd + right[1] * strafe;
+        let wlen = (wx * wx + wy * wy).sqrt();
+        if wlen > 1e-6 {
+            wx /= wlen;
+            wy /= wlen;
+        } else {
+            wx = 0.0;
+            wy = 0.0;
+        }
+
+        let vx = self.ps.velocity[0];
+        let vy = self.ps.velocity[1];
+        let speed = (vx * vx + vy * vy).sqrt();
+        // Signed acceleration along the wish direction (positive = gaining).
+        let accel = vx * wx + vy * wy;
+
+        vec![vx, vy, 0.0, wx, wy, 0.0, speed, accel]
+    }
+
     // Race state getters.
     pub fn race_running(&self) -> bool { self.race.running }
     pub fn race_finished(&self) -> bool { self.race.finished }
