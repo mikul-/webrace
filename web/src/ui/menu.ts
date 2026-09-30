@@ -2,8 +2,17 @@
 // applies changes to the game + localStorage.
 
 import { Settings, saveSettings, loadSettings, encodeConfig, decodeConfig } from "../settings";
-import { fetchLeaderboard } from "../net/leaderboard";
+import { fetchLeaderboard, getIdentity } from "../net/leaderboard";
 import { ACTIONS, BindMap, displayCode } from "../binds";
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+}
+
+function getNickname(): string | null {
+  const id = getIdentity();
+  return id ? id.nickname : null;
+}
 
 export interface SettingsCallbacks {
   onFov: (fov: number) => void;
@@ -26,9 +35,12 @@ export class Menu {
   private xhairEl: HTMLElement;
   private leaderboardEl: HTMLElement;
   private bindsEl: HTMLElement;
+  private lbMapInput: HTMLInputElement;
+  private lbRefreshBtn: HTMLButtonElement;
   private cb: SettingsCallbacks;
   private onToggle: (open: boolean) => void;
   private captureAction: string | null = null;
+  private lbMap = "";
 
   constructor(cb: SettingsCallbacks, onToggle: (open: boolean) => void) {
     this.cb = cb;
@@ -47,10 +59,41 @@ export class Menu {
     this.xhairEl = document.getElementById("crosshair")!;
     this.leaderboardEl = document.getElementById("leaderboard")!;
     this.bindsEl = document.getElementById("binds")!;
+    this.lbMapInput = document.getElementById("lb-map-input") as HTMLInputElement;
+    this.lbRefreshBtn = document.getElementById("lb-refresh") as HTMLButtonElement;
 
     this.bind();
+    this.bindTabs();
     this.bindConfigButtons();
+    this.bindLeaderboardControls();
     this.applyAll();
+  }
+
+  /** Tab/page switching. */
+  private bindTabs() {
+    const tabs = Array.from(this.menuEl.querySelectorAll<HTMLButtonElement>(".tab"));
+    const pages = Array.from(this.menuEl.querySelectorAll<HTMLElement>(".page"));
+    for (const tab of tabs) {
+      tab.addEventListener("click", () => {
+        const pageId = tab.dataset.page;
+        for (const t of tabs) t.classList.toggle("active", t === tab);
+        for (const p of pages) p.classList.toggle("active", p.id === `page-${pageId}`);
+      });
+    }
+  }
+
+  /** Leaderboard controls (map input + refresh). */
+  private bindLeaderboardControls() {
+    this.lbRefreshBtn.addEventListener("click", () => {
+      const map = this.lbMapInput.value.trim();
+      if (map) void this.refreshLeaderboard(map);
+    });
+    this.lbMapInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        const map = this.lbMapInput.value.trim();
+        if (map) void this.refreshLeaderboard(map);
+      }
+    });
   }
 
   /** Wire the share-config copy/apply buttons. */
@@ -171,16 +214,25 @@ export class Menu {
     this.onToggle(open);
   }
 
+  /** Prefill the leaderboard map input with the given map. */
+  prefillLeaderboardMap(map: string) {
+    if (this.lbMapInput.value.trim() === "") {
+      this.lbMapInput.value = map.toLowerCase();
+    }
+  }
+
   isOpen(): boolean {
     return this.menuEl.classList.contains("open");
   }
 
-  /** Load and render the leaderboard for a map. */
+  /** Load and render the leaderboard for a map (formatted table). */
   async refreshLeaderboard(map: string) {
+    this.lbMap = map.toLowerCase();
+    if (this.lbMapInput.value !== this.lbMap) this.lbMapInput.value = this.lbMap;
     try {
-      const entries = await fetchLeaderboard(map);
+      const entries = await fetchLeaderboard(this.lbMap);
       if (entries.length === 0) {
-        this.leaderboardEl.textContent = "no times yet";
+        this.leaderboardEl.innerHTML = `<div class="lb-row" style="justify-content:center;color:#5a6472">no times yet</div>`;
         return;
       }
       const fmt = (ms: number) => {
@@ -189,23 +241,21 @@ export class Menu {
         const cs = Math.floor((ms % 1000) / 10);
         return `${m}:${s.toString().padStart(2, "0")}.${cs.toString().padStart(2, "0")}`;
       };
-      this.leaderboardEl.innerHTML = entries
-        .map((e: { nickname: string; time_ms: number }, i: number) => {
-          const row = document.createElement("div");
-          row.className = "lb-row";
-          const pos = document.createElement("span");
-          pos.className = "lb-pos";
-          pos.textContent = `${i + 1}.`;
-          const name = document.createElement("span");
-          name.textContent = e.nickname;
-          const time = document.createElement("span");
-          time.textContent = fmt(e.time_ms);
-          row.append(pos, name, time);
-          return row.outerHTML;
-        })
-        .join("");
-    } catch (e) {
-      this.leaderboardEl.textContent = "leaderboard unavailable";
+      const me = getNickname();
+      // Header + rows.
+      const head = `<div class="lb-head"><span>#</span><span>player</span><span class="lb-time">time</span></div>`;
+      const rows = entries.map((e, i) => {
+        const isMe = me !== null && e.nickname === me;
+        const wr = i === 0 ? ' <span style="color:#ffb238">WR</span>' : "";
+        return `<div class="lb-row${isMe ? " me" : ""}">
+          <span class="lb-pos">${i + 1}.</span>
+          <span>${escapeHtml(e.nickname)}${isMe ? ' <span style="opacity:.6">(you)</span>' : ""}${wr}</span>
+          <span class="lb-time">${fmt(e.time_ms)}</span>
+        </div>`;
+      });
+      this.leaderboardEl.innerHTML = head + rows.join("");
+    } catch {
+      this.leaderboardEl.innerHTML = `<div class="lb-row" style="justify-content:center;color:#5a6472">leaderboard unavailable</div>`;
     }
   }
 

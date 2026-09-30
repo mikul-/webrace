@@ -281,7 +281,11 @@ function dispatchAction(action: Action): void {
     case "menu":
       if (menu) {
         menu.setOpen(!menu.isOpen());
-        if (menu.isOpen() && currentMap) void menu.refreshLeaderboard(currentMap);
+        if (menu.isOpen() && currentMap) {
+          // Populate the leaderboard map field with the current map.
+          menu.prefillLeaderboardMap(currentMap);
+          void menu.refreshLeaderboard(currentMap);
+        }
       }
       break;
     case "position_save":

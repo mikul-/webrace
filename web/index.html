@@ -160,8 +160,8 @@
         justify-content: flex-start;
         overflow-y: auto;
         gap: 12px;
-        padding: 24px;
-        background: rgba(11, 13, 18, 0.95);
+        padding: 24px 24px 40px;
+        background: rgba(11, 13, 18, 0.96);
         color: #cfd4dd;
         font: 13px/1.5 ui-monospace, monospace;
         z-index: 20;
@@ -169,12 +169,46 @@
       #menu.open {
         display: flex;
       }
-      #menu h2 {
-        margin: 12px 0 4px;
+      .tabs {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 8px;
+      }
+      .tab {
+        background: #11141c;
+        border: 1px solid #2a3040;
+        color: #9aa3b2;
+        padding: 8px 18px;
+        font: inherit;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        cursor: pointer;
+      }
+      .tab:hover {
+        border-color: #5a6472;
+      }
+      .tab.active {
+        background: #1a2130;
+        border-color: #fa00ff;
         color: #fa00ff;
-        font-size: 15px;
+      }
+      .page {
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+      }
+      .page.active {
+        display: flex;
+      }
+      .page-title {
+        color: #fa00ff;
+        font-size: 14px;
         letter-spacing: 1px;
         text-transform: uppercase;
+        margin-top: 8px;
       }
       .menu-group {
         display: flex;
@@ -214,21 +248,75 @@
         cursor: pointer;
         padding: 0;
       }
+      .lb-controls {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        width: 400px;
+        max-width: 90vw;
+      }
+      .lb-controls label {
+        color: #9aa3b2;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex: 1;
+      }
+      .lb-controls input {
+        flex: 1;
+        background: #11141c;
+        border: 1px solid #2a3040;
+        color: #cfd4dd;
+        padding: 6px 8px;
+        font: inherit;
+      }
+      .lb-controls button {
+        background: #11141c;
+        border: 1px solid #fa00ff;
+        color: #fa00ff;
+        padding: 6px 12px;
+        font: inherit;
+        cursor: pointer;
+      }
       .leaderboard {
-        width: 360px;
+        width: 400px;
         max-width: 90vw;
         min-height: 40px;
-        white-space: pre;
         font-variant-numeric: tabular-nums;
         color: #9aa3b2;
+        background: #11141c;
+        border: 1px solid #2a3040;
       }
+      .leaderboard .lb-head,
       .leaderboard .lb-row {
-        display: flex;
-        justify-content: space-between;
+        display: grid;
+        grid-template-columns: 40px 1fr 90px;
+        gap: 8px;
+        padding: 5px 12px;
+      }
+      .leaderboard .lb-head {
+        color: #5a6472;
+        text-transform: uppercase;
+        font-size: 11px;
+        letter-spacing: 0.5px;
+        border-bottom: 1px solid #2a3040;
+      }
+      .leaderboard .lb-row:nth-child(odd) {
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .leaderboard .lb-row.me {
+        background: rgba(250, 0, 255, 0.10);
+        color: #fa00ff;
       }
       .leaderboard .lb-pos {
         color: #fa00ff;
-        margin-right: 10px;
+      }
+      .leaderboard .lb-time {
+        text-align: right;
+      }
+      .maps-placeholder {
+        color: #5a6472;
+        margin-top: 20px;
       }
       .menu-hint {
         color: #5a6472;
@@ -305,41 +393,63 @@
       <pre id="log"></pre>
     </div>
     <div id="menu">
-      <h2>Settings</h2>
-      <div class="menu-group">
-        <label>FOV <span id="fov-value" class="val"></span></label>
-        <div class="row">
-          <input type="range" id="fov-slider" min="60" max="160" step="1" />
-          <input type="number" id="fov-input" min="60" max="160" step="1" />
+      <nav class="tabs">
+        <button class="tab active" data-page="leaderboards">Leaderboards</button>
+        <button class="tab" data-page="settings">Settings</button>
+        <button class="tab" data-page="maps">Maps</button>
+      </nav>
+
+      <section class="page active" id="page-leaderboards">
+        <div class="page-title">Leaderboards</div>
+        <div class="lb-controls">
+          <label>Map <input id="lb-map-input" list="lb-map-list" /></label>
+          <datalist id="lb-map-list"></datalist>
+          <button id="lb-refresh">Refresh</button>
         </div>
-      </div>
-      <div class="menu-group">
-        <label>Sensitivity <span id="sens-value" class="val"></span></label>
-        <div class="row">
-          <input type="range" id="sens-slider" min="0.1" max="50" step="0.01" />
-          <input type="number" id="sens-input" min="0.1" max="50" step="0.01" />
+        <div id="leaderboard" class="leaderboard"></div>
+      </section>
+
+      <section class="page" id="page-settings">
+        <div class="page-title">Settings</div>
+        <div class="menu-group">
+          <label>FOV <span id="fov-value" class="val"></span></label>
+          <div class="row">
+            <input type="range" id="fov-slider" min="60" max="160" step="1" />
+            <input type="number" id="fov-input" min="60" max="160" step="1" />
+          </div>
         </div>
-      </div>
-      <div class="menu-group">
-        <label>Crosshair color</label>
-        <input type="color" id="xhair-color" />
-      </div>
-      <div class="menu-group">
-        <label>Crosshair size <span id="xhair-size-value" class="val"></span></label>
-        <div class="row">
-          <input type="range" id="xhair-size" min="4" max="64" step="1" />
+        <div class="menu-group">
+          <label>Sensitivity <span id="sens-value" class="val"></span></label>
+          <div class="row">
+            <input type="range" id="sens-slider" min="0.1" max="50" step="0.01" />
+            <input type="number" id="sens-input" min="0.1" max="50" step="0.01" />
+          </div>
         </div>
-      </div>
-      <h2>Leaderboard</h2>
-      <div id="leaderboard" class="leaderboard"></div>
-      <h2>Key binds</h2>
-      <div id="binds" class="binds"></div>
-      <h2>Config</h2>
-      <div class="config">
-        <button id="share-config">Copy share code</button>
-        <input id="config-code" placeholder="paste share code" />
-        <button id="apply-config">Apply</button>
-      </div>
+        <div class="menu-group">
+          <label>Crosshair color</label>
+          <input type="color" id="xhair-color" />
+        </div>
+        <div class="menu-group">
+          <label>Crosshair size <span id="xhair-size-value" class="val"></span></label>
+          <div class="row">
+            <input type="range" id="xhair-size" min="4" max="64" step="1" />
+          </div>
+        </div>
+        <div class="page-title">Key binds</div>
+        <div id="binds" class="binds"></div>
+        <div class="page-title">Config</div>
+        <div class="config">
+          <button id="share-config">Copy share code</button>
+          <input id="config-code" placeholder="paste share code" />
+          <button id="apply-config">Apply</button>
+        </div>
+      </section>
+
+      <section class="page" id="page-maps">
+        <div class="page-title">Maps</div>
+        <p class="maps-placeholder">Map voting &amp; browsing coming soon.</p>
+      </section>
+
       <p class="menu-hint">Escape to close</p>
     </div>
     <script type="module" src="/src/main.ts"></script>
