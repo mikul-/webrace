@@ -23,6 +23,10 @@ pub struct TraceResult {
 pub const PLAYER_MINS: [f32; 3] = [-16.0, -16.0, -24.0];
 pub const PLAYER_MAXS: [f32; 3] = [16.0, 16.0, 40.0];
 
+/// Crouched player box (Warfork playerbox_crouch: maxs z = 16).
+pub const CROUCH_MINS: [f32; 3] = [-16.0, -16.0, -24.0];
+pub const CROUCH_MAXS: [f32; 3] = [16.0, 16.0, 16.0];
+
 pub struct World {
     pub brush_plane_offsets: Vec<u32>,
     pub brush_plane_count: Vec<u32>,

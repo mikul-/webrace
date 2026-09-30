@@ -33,6 +33,8 @@ pub struct PlayerState {
     pub special_held: bool,
     pub jump_held: bool,
     pub on_ground: bool,
+    /// Whether the player is currently crouched (shrinks the box + view).
+    pub crouched: bool,
     /// Surface flags of the ground currently stood on (SURF_SLICK etc.).
     pub ground_flags: i32,
     /// Normal of the ground plane currently stood on (for slope sliding).
@@ -53,6 +55,7 @@ impl Default for PlayerState {
             special_held: false,
             jump_held: false,
             on_ground: false,
+            crouched: false,
             ground_flags: 0,
             ground_normal: [0.0, 0.0, 1.0],
             speed: 0.0,
@@ -68,6 +71,9 @@ pub struct Pmove {
     pub frametime: f32,
     pub max_speed: f32,
     pub max_player_speed: f32,
+    /// Current player box (updated each tick from crouch state).
+    pub mins: [f32; 3],
+    pub maxs: [f32; 3],
 }
 
 impl Pmove {
@@ -80,6 +86,8 @@ impl Pmove {
             frametime,
             max_speed: 320.0,
             max_player_speed: 600.0,
+            mins: crate::trace::PLAYER_MINS,
+            maxs: crate::trace::PLAYER_MAXS,
         }
     }
 
@@ -139,8 +147,8 @@ impl Pmove {
         let end = [ps.origin[0], ps.origin[1], ps.origin[2] - down];
         let tr = self.world.trace(
             start,
-            crate::trace::PLAYER_MINS,
-            crate::trace::PLAYER_MAXS,
+            self.mins,
+            self.maxs,
             end,
         );
         // Grounded only if we actually hit something walkable (flat enough).
@@ -163,6 +171,12 @@ impl Pmove {
     pub fn step(&mut self, ps: &mut PlayerState, cmd: &Cmd) {
         let special = cmd.buttons & crate::input::BUTTON_SPECIAL != 0;
         let jump = cmd.buttons & crate::input::BUTTON_JUMP != 0;
+        let crouch = cmd.buttons & crate::input::BUTTON_CROUCH != 0;
+
+        // Crouch state. (We don't yet block uncrouching under low ceilings.)
+        ps.crouched = crouch;
+        self.mins = if crouch { crate::trace::CROUCH_MINS } else { crate::trace::PLAYER_MINS };
+        self.maxs = if crouch { crate::trace::CROUCH_MAXS } else { crate::trace::PLAYER_MAXS };
 
         // Timers decay (in milliseconds).
         if ps.doshtime > 0 {
@@ -246,15 +260,11 @@ impl Pmove {
             // origin[2] - 24. We trace down a short distance and snap.
             let start = ps.origin;
             let end = [start[0], start[1], start[2] - 30.0];
-            let tr = self.world.trace(
-                start,
-                crate::trace::PLAYER_MINS,
-                crate::trace::PLAYER_MAXS,
-                end,
-            );
+            let tr = self.world.trace(start, self.mins, self.maxs, end);
             if tr.fraction < 1.0 && tr.normal[2] > 0.7 {
                 let surface_z = start[2] - 30.0 * tr.fraction;
-                // Feet rest on the surface: origin[2] - 24 = surface_z.
+                // Feet rest on the surface: origin[2] - 24 = surface_z
+                // (feet offset is -24 regardless of crouch, since mins.z = -24).
                 let target_z = surface_z + 24.0;
                 if ps.origin[2] > target_z {
                     ps.origin[2] = target_z;
@@ -647,8 +657,8 @@ impl Pmove {
     /// Slide the player along the world. First tries stair-stepping; otherwise
     /// performs Quake-style PM_SlideMove (multi-pass plane clipping).
     fn slide_move(&mut self, ps: &mut PlayerState) {
-        let mins = crate::trace::PLAYER_MINS;
-        let maxs = crate::trace::PLAYER_MAXS;
+        let mins = self.mins;
+        let maxs = self.maxs;
 
         let start = ps.origin;
         let end = [

@@ -335,9 +335,11 @@ impl Session {
     }
 
     /// Camera eye position (render space). The player origin is the box-center
-    /// basis (feet at origin[2]-24); the eye sits ~26 units above that.
+    /// basis (feet at origin[2]-24); the eye sits ~26 units above that, lower
+    /// when crouched.
     pub fn eye(&self) -> [f32; 3] {
-        [self.ps.origin[0], self.ps.origin[1], self.ps.origin[2] + 26.0]
+        let off = if self.ps.crouched { 18.0 } else { 26.0 };
+        [self.ps.origin[0], self.ps.origin[1], self.ps.origin[2] + off]
     }
 
     pub fn yaw(&self) -> f32 { self.ps.viewangles[1] }
