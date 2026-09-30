@@ -61,8 +61,6 @@ export class Menu {
   private catalog: MapInfo[] | null = null;
   private mapResults: MapInfo[] = [];
   private mapRendered = 0;
-  private mapSentinel: HTMLElement | null = null;
-  private mapObserver: IntersectionObserver | null = null;
 
   constructor(cb: SettingsCallbacks, onToggle: (open: boolean) => void) {
     this.cb = cb;
@@ -171,6 +169,8 @@ export class Menu {
     });
 
     this.mapsSearchInput.addEventListener("input", () => this.renderMapsList());
+
+    this.mapsListEl.addEventListener("scroll", this.onMapsListScroll);
   }
 
   async getCatalog(): Promise<MapInfo[]> {
@@ -197,29 +197,15 @@ export class Menu {
       this.mapsListEl.appendChild(this.makeMapRow(this.mapResults[i]));
     }
     this.mapRendered = end;
-    this.updateMapSentinel();
   }
 
-  private updateMapSentinel() {
-    // Remove any old sentinel.
-    this.mapSentinel?.remove();
-    if (this.mapRendered >= this.mapResults.length) {
-      this.mapSentinel = null;
-      return;
+  /** Load more when the list is scrolled near the bottom. */
+  private onMapsListScroll = () => {
+    const el = this.mapsListEl;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200) {
+      this.appendMapBatch();
     }
-    const sentinel = document.createElement("div");
-    sentinel.className = "map-sentinel";
-    sentinel.style.height = "2px";
-    this.mapsListEl.appendChild(sentinel);
-    this.mapSentinel = sentinel;
-    if (this.mapObserver) this.mapObserver.disconnect();
-    this.mapObserver = new IntersectionObserver((entries) => {
-      if (entries.some((e) => e.isIntersecting)) {
-        this.appendMapBatch();
-      }
-    });
-    this.mapObserver.observe(sentinel);
-  }
+  };
 
   renderFavorites() {
     if (!this.catalog) {
