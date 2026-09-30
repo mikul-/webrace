@@ -1,25 +1,41 @@
 #!/usr/bin/env bash
-# Deploy webrace to the TrueNAS server (Caddy web root + Node backends).
+# Deploy webrace to the TrueNAS server.
 #
-# Runs ON the server (192.168.0.107, ssh alias `server`). The site is a git
-# clone at /mnt/storage1/www/webrace; this script pulls, rebuilds the WASM core
-# and the static client, then (re)starts the two Node backend servers under
-# systemd user services.
+# Run on the DEV machine (which has Rust + Node). It pulls latest origin into
+# the NFS-mounted clone at /mnt/www/webrace (the same filesystem the server
+# sees as /mnt/storage1/www/webrace), builds the WASM core + static client
+# there (so `web/dist` automatically appears on the server), then SSHes to the
+# server to restart the backend container and reload Caddy.
+#
+# Usage: ./scripts/deploy.sh
 set -euo pipefail
 
-SITE=/mnt/storage1/www/webrace
-cd "$SITE"
+SITE="/mnt/www/webrace"
+SERVER="server"   # ssh alias -> 192.168.0.107
+
+if [ ! -d "$SITE/.git" ]; then
+  echo "error: $SITE is not a git clone" >&2
+  exit 1
+fi
 
 echo "==> git pull"
-git -c safe.directory="$SITE" pull --ff-only origin master
+git config --global --add safe.directory "$SITE" 2>/dev/null || true
+git -C "$SITE" pull --ff-only origin master
 
 echo "==> build WASM core"
 export PATH="$HOME/.cargo/bin:/usr/bin:$PATH"
-./scripts/build-wasm.sh
+"$SITE/scripts/build-wasm.sh"
 
-echo "==> build static client (base=/webrace/)"
-npm install --prefix web --no-audit --no-fund 2>&1 | tail -3
-WB_BASE=/webrace/ npm --prefix web run build
+echo "==> npm install + build static client (base=/webrace/)"
+(cd "$SITE/web" && npm install --no-audit --no-fund)
+(cd "$SITE/web" && WB_BASE=/webrace/ npx vite build)
 
-echo "==> deploy done. dist at web/dist"
-ls -la web/dist
+echo "==> (re)start backend container + reload Caddy on server"
+ssh "$SERVER" '
+  set -e
+  cd /mnt/storage1/www/webrace
+  sudo docker compose up -d --build webrace
+  sudo docker exec ix-webserver-webserver-1 caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+'
+
+echo "==> done. Live at https://ip.mikul.se/webrace/"

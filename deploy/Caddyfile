@@ -1,0 +1,53 @@
+# webrace site config for the Caddy reverse proxy on the TrueNAS server.
+#
+# Lives at /mnt/storage1/caddy/Caddyfile (mounted into the "webserver" Caddy
+# container at /etc/caddy/Caddyfile). This is the live file; the copy in the
+# repo is the reference. The static client is built into
+# /mnt/storage1/www/webrace/web/dist (served via NFS from the dev machine).
+#
+# The two webrace Node backends run in the `webrace` Docker container; their
+# ports are published on the host (192.168.0.107:4173 = map-server,
+# 192.168.0.107:4174 = leaderboard), and Caddy reverse-proxies the /webrace/*
+# API paths to them (stripping the /webrace prefix so the backends see their
+# native routes).
+
+ip.mikul.se {
+	handle /webrace/maps/* {
+		uri strip_prefix /webrace
+		reverse_proxy 192.168.0.107:4173
+	}
+	handle /webrace/tex/* {
+		uri strip_prefix /webrace
+		reverse_proxy 192.168.0.107:4173
+	}
+	handle /webrace/catalog {
+		uri strip_prefix /webrace
+		reverse_proxy 192.168.0.107:4173
+	}
+	handle /webrace/api/* {
+		uri strip_prefix /webrace
+		reverse_proxy 192.168.0.107:4174
+	}
+	handle_path /webrace/* {
+		root * /usr/share/caddy/webrace/web/dist
+		try_files {path} /index.html
+		file_server
+	}
+	handle {
+		root * /usr/share/caddy
+		file_server
+	}
+}
+
+memos.ip.mikul.se, memos.mikul.se {
+	reverse_proxy 192.168.0.107:30311
+}
+
+nc.mikul.se {
+	reverse_proxy https://192.168.0.107:30027 {
+		header_up Host {host}
+		transport http {
+			tls_insecure_skip_verify
+		}
+	}
+}
