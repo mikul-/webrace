@@ -16,3 +16,4 @@ server/*.db
 server/*.db-journal
 server/*.db-wal
 server/*.db-shm
+server/.pk3-cache/
