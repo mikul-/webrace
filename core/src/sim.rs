@@ -171,6 +171,27 @@ impl Session {
         self.mouse.sensitivity = s;
     }
 
+    /// Directly set the player position and view (debug/noclip / test hook).
+    pub fn teleport(&mut self, x: f32, y: f32, z: f32, yaw: f32, pitch: f32) {
+        self.ps.origin = [x, y, z];
+        self.ps.velocity = [0.0, 0.0, 0.0];
+        self.ps.viewangles = [pitch, yaw, 0.0];
+        self.ps.on_ground = false;
+        self.angles.set_view_rad(yaw, pitch);
+        self.held_cmd = Cmd::default();
+        self.pmove.drop_to_ground(&mut self.ps);
+    }
+
+    /// Set position without gravity settle (test hook for exact repro).
+    pub fn teleport_raw(&mut self, x: f32, y: f32, z: f32, yaw: f32, pitch: f32) {
+        self.ps.origin = [x, y, z];
+        self.ps.velocity = [0.0, 0.0, 0.0];
+        self.ps.viewangles = [pitch, yaw, 0.0];
+        self.ps.on_ground = false;
+        self.angles.set_view_rad(yaw, pitch);
+        self.held_cmd = Cmd::default();
+    }
+
     /// Save the current position as the new spawn point. Returns true on
     /// success. Only allowed within the current save zone (the start gate), on
     /// the "before the start line" side (same side as the original spawn), so

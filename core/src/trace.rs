@@ -193,9 +193,11 @@ impl World {
         }
 
         if start_solid {
+            // Return the direction the box is deepest inside (the plane it
+            // overlaps most), so the caller can push the player OUT correctly.
             return TraceResult {
                 fraction: 0.0,
-                normal: [0.0, 0.0, 1.0],
+                normal: best_normal,
                 all_solid,
                 start_solid: true,
                 surface_flags: best_surface_flags,

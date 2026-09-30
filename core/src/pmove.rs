@@ -664,30 +664,12 @@ impl Pmove {
         }
 
         // If we started embedded (start_solid), push the player out along the
-        // surface normal so they don't stay stuck in the wall.
+        // axis that actually clears them (wall corners embed horizontally, so
+        // a single "up" push is often wrong).
         if tr.start_solid {
-            let n = tr.normal;
-            let push = 0.5;
-            let new_origin = [
-                start[0] + n[0] * push,
-                start[1] + n[1] * push,
-                start[2] + n[2] * push,
-            ];
-            // Verify the pushed position is no longer solid; if still solid,
-            // also try straight up.
-            let chk = self.world.trace(new_origin, mins, maxs, new_origin);
-            if !chk.start_solid {
-                ps.origin = new_origin;
-            } else {
-                let up = [start[0], start[1], start[2] + push];
-                let chk2 = self.world.trace(up, mins, maxs, up);
-                if !chk2.start_solid {
-                    ps.origin = up;
-                } else {
-                    ps.origin = start;
-                }
-            }
+            self.resolve_solid(ps, start, mins, maxs);
             // Zero the into-surface velocity.
+            let n = tr.normal;
             let dot = ps.velocity[0] * n[0] + ps.velocity[1] * n[1] + ps.velocity[2] * n[2];
             if dot < 0.0 {
                 ps.velocity[0] -= n[0] * dot;
@@ -710,35 +692,43 @@ impl Pmove {
         self.slide_clip(ps, start, tr, mins, maxs);
 
         // Final safety: if the slide left the player embedded (e.g. wedged in
-        // a reentrant inside corner), push them out so they can slide free.
+        // a reentrant inside corner), push them out along the axis that clears.
         let chk = self.world.trace(ps.origin, mins, maxs, ps.origin);
         if chk.start_solid {
-            let n = chk.normal;
-            // Try pushing along the normal, then straight up if that fails.
-            let mut resolved = false;
-            for step in [0.5f32, 1.0, 2.0] {
-                let cand = [
-                    ps.origin[0] + n[0] * step,
-                    ps.origin[1] + n[1] * step,
-                    ps.origin[2] + n[2].max(0.0) * step,
-                ];
+            self.resolve_solid(ps, ps.origin, mins, maxs);
+        }
+    }
+
+    /// Push the player out of geometry they are embedded in, scanning the
+    /// 6 axis directions (+/-x, +/-y, +/-z) for the smallest push that clears,
+    /// preferring the shallow horizontal axes first. Leaves `origin` unchanged
+    /// if no direction clears (shouldn't happen in practice).
+    fn resolve_solid(
+        &mut self,
+        ps: &mut PlayerState,
+        from: [f32; 3],
+        mins: [f32; 3],
+        maxs: [f32; 3],
+    ) {
+        let dirs: [[f32; 3]; 6] = [
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+        ];
+        let steps: [f32; 8] = [1.0, 2.0, 4.0, 8.0, 16.0, 24.0, 32.0, 48.0];
+        for d in dirs {
+            for s in steps {
+                let cand = [from[0] + d[0] * s, from[1] + d[1] * s, from[2] + d[2] * s];
                 if !self.world.trace(cand, mins, maxs, cand).start_solid {
                     ps.origin = cand;
-                    resolved = true;
-                    break;
-                }
-            }
-            if !resolved {
-                // Push straight up until clear.
-                for step in [1.0f32, 2.0, 4.0, 8.0] {
-                    let cand = [ps.origin[0], ps.origin[1], ps.origin[2] + step];
-                    if !self.world.trace(cand, mins, maxs, cand).start_solid {
-                        ps.origin = cand;
-                        break;
-                    }
+                    return;
                 }
             }
         }
+        // No direction cleared (fully embedded); leave as-is.
     }
 
     /// Attempt an 18-unit stair-step (Quake PM_StepSlideMove). Returns true if
