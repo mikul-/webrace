@@ -708,6 +708,37 @@ impl Pmove {
         }
 
         self.slide_clip(ps, start, tr, mins, maxs);
+
+        // Final safety: if the slide left the player embedded (e.g. wedged in
+        // a reentrant inside corner), push them out so they can slide free.
+        let chk = self.world.trace(ps.origin, mins, maxs, ps.origin);
+        if chk.start_solid {
+            let n = chk.normal;
+            // Try pushing along the normal, then straight up if that fails.
+            let mut resolved = false;
+            for step in [0.5f32, 1.0, 2.0] {
+                let cand = [
+                    ps.origin[0] + n[0] * step,
+                    ps.origin[1] + n[1] * step,
+                    ps.origin[2] + n[2].max(0.0) * step,
+                ];
+                if !self.world.trace(cand, mins, maxs, cand).start_solid {
+                    ps.origin = cand;
+                    resolved = true;
+                    break;
+                }
+            }
+            if !resolved {
+                // Push straight up until clear.
+                for step in [1.0f32, 2.0, 4.0, 8.0] {
+                    let cand = [ps.origin[0], ps.origin[1], ps.origin[2] + step];
+                    if !self.world.trace(cand, mins, maxs, cand).start_solid {
+                        ps.origin = cand;
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     /// Attempt an 18-unit stair-step (Quake PM_StepSlideMove). Returns true if
