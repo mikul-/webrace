@@ -85,4 +85,16 @@ impl Angles {
     pub fn to_pitch_rad(&self) -> f32 {
         self.pitch / 32768.0 * std::f32::consts::PI
     }
+
+    /// Set the view angles (yaw/pitch) directly from radians, keeping the
+    /// internal 65536-unit representation consistent (used for spawn reset).
+    pub fn set_view_rad(&mut self, yaw_rad: f32, pitch_rad: f32) {
+        let yaw = yaw_rad / std::f32::consts::PI * 32768.0 + 32768.0;
+        let yaw = (yaw % ANGLE_2_PI + ANGLE_2_PI) % ANGLE_2_PI;
+        let pitch = (pitch_rad / std::f32::consts::PI * 32768.0).clamp(-16384.0, 16384.0);
+        self.yaw = yaw;
+        self.pitch = pitch;
+        self.yaw_frac = yaw;
+        self.pitch_frac = pitch;
+    }
 }

@@ -663,6 +663,40 @@ impl Pmove {
             return;
         }
 
+        // If we started embedded (start_solid), push the player out along the
+        // surface normal so they don't stay stuck in the wall.
+        if tr.start_solid {
+            let n = tr.normal;
+            let push = 0.5;
+            let new_origin = [
+                start[0] + n[0] * push,
+                start[1] + n[1] * push,
+                start[2] + n[2] * push,
+            ];
+            // Verify the pushed position is no longer solid; if still solid,
+            // also try straight up.
+            let chk = self.world.trace(new_origin, mins, maxs, new_origin);
+            if !chk.start_solid {
+                ps.origin = new_origin;
+            } else {
+                let up = [start[0], start[1], start[2] + push];
+                let chk2 = self.world.trace(up, mins, maxs, up);
+                if !chk2.start_solid {
+                    ps.origin = up;
+                } else {
+                    ps.origin = start;
+                }
+            }
+            // Zero the into-surface velocity.
+            let dot = ps.velocity[0] * n[0] + ps.velocity[1] * n[1] + ps.velocity[2] * n[2];
+            if dot < 0.0 {
+                ps.velocity[0] -= n[0] * dot;
+                ps.velocity[1] -= n[1] * dot;
+                ps.velocity[2] -= n[2] * dot;
+            }
+            return;
+        }
+
         // Blocked — try stair-stepping only when running into a WALL (near
         // vertical surface), not when descending a floor/slope. Otherwise
         // going down ramps would try to "step up" every tick (bumpy).

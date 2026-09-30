@@ -48,7 +48,7 @@ export const DEFAULT_BINDS: BindMap = {
   ShiftLeft: "crouch",
   ControlLeft: "crouch",
   Mouse2: "jump",
-  Mouse6: "position_save",
+  Mouse3: "position_save",
   Digit4: "restart",
   Escape: "menu",
 };

@@ -59,10 +59,17 @@ pub struct Session {
     held_cmd: Cmd,
     spawn_origin: [f32; 3],
     spawn_yaw: f32,
+    spawn_pitch: f32,
     race: Race,
     /// Bounds the position-save zone (the start gate AABB). Outside this the
     /// player cannot set a new spawn. Updated as the race passes checkpoints.
     save_zone: Option<[[f32; 3]; 2]>,
+    /// The "before the start line" side: the axis (0/1/2) of the start gate's
+    /// thin dimension, and the sign of the spawn's offset from the gate center
+    /// along that axis. Position-save must land on the same side (behind the
+    /// start line), not past it.
+    start_axis: usize,
+    start_sign: f32,
 }
 
 impl Session {
@@ -90,20 +97,39 @@ impl Session {
 
         let yaw = ps.viewangles[1];
         let race = Race::new(bsp.race_gates.clone());
-        // The save zone is a generous box around the start gate trigger (the
-        // area near the start line). We expand the trigger's thin AABB so the
-        // player can stand anywhere near the start and set a custom spawn.
+        // The save zone is a generous box around the start gate trigger, but we
+        // restrict saving to the "before" side of the start line (the side the
+        // spawn is on), so you can't save past it.
         const SAVE_MARGIN: f32 = 256.0;
-        let save_zone = bsp
+        let (save_zone, start_axis, start_sign) = match bsp
             .race_gates
             .iter()
             .find(|g| g.kind == RaceGateKind::Start)
-            .map(|g| {
-                [
+        {
+            Some(g) => {
+                let zone = [
                     [g.mins[0] - SAVE_MARGIN, g.mins[1] - SAVE_MARGIN, g.mins[2] - SAVE_MARGIN],
                     [g.maxs[0] + SAVE_MARGIN, g.maxs[1] + SAVE_MARGIN, g.maxs[2] + SAVE_MARGIN],
-                ]
-            });
+                ];
+                // Thin axis = smallest extent of the start gate.
+                let ext = [
+                    g.maxs[0] - g.mins[0],
+                    g.maxs[1] - g.mins[1],
+                    g.maxs[2] - g.mins[2],
+                ];
+                let axis = if ext[0] <= ext[1] && ext[0] <= ext[2] {
+                    0
+                } else if ext[1] <= ext[2] {
+                    1
+                } else {
+                    2
+                };
+                let center = (g.mins[axis] + g.maxs[axis]) * 0.5;
+                let sign = if spawn_origin[axis] < center { -1.0 } else { 1.0 };
+                (Some(zone), axis, sign)
+            }
+            None => (None, 0, 0.0),
+        };
 
         Ok(Session {
             pmove,
@@ -117,8 +143,11 @@ impl Session {
             held_cmd: Cmd::default(),
             spawn_origin,
             spawn_yaw,
+            spawn_pitch: 0.0,
             race,
             save_zone,
+            start_axis,
+            start_sign,
         })
     }
 
@@ -126,13 +155,13 @@ impl Session {
     pub fn reset(&mut self) {
         self.ps.origin = self.spawn_origin;
         self.ps.velocity = [0.0, 0.0, 0.0];
-        self.ps.viewangles = [0.0, self.spawn_yaw, 0.0];
+        self.ps.viewangles = [self.spawn_pitch, self.spawn_yaw, 0.0];
         self.ps.doshtime = 0;
         self.ps.wjtime = 0;
         self.ps.on_ground = false;
         self.ps.special_held = false;
         self.ps.jump_held = false;
-        self.angles = Angles { yaw: self.spawn_yaw, ..Default::default() };
+        self.angles.set_view_rad(self.spawn_yaw, self.spawn_pitch);
         self.held_cmd = Cmd::default();
         self.pmove.drop_to_ground(&mut self.ps);
         self.race.reset();
@@ -143,8 +172,9 @@ impl Session {
     }
 
     /// Save the current position as the new spawn point. Returns true on
-    /// success. Only allowed within the current save zone (the start gate, or
-    /// later the current checkpoint gate in practice mode).
+    /// success. Only allowed within the current save zone (the start gate), on
+    /// the "before the start line" side (same side as the original spawn), so
+    /// you can't start past the line.
     pub fn position_save(&mut self) -> bool {
         let Some([mins, maxs]) = self.save_zone else {
             return false;
@@ -159,8 +189,17 @@ impl Session {
         if !inside {
             return false;
         }
+        // Must be on the "before" side of the start line (same side as the
+        // original spawn), i.e. the same sign along the gate's thin axis
+        // relative to the gate center.
+        let center = (mins[self.start_axis] + maxs[self.start_axis]) * 0.5;
+        let player_side = if p[self.start_axis] < center { -1.0 } else { 1.0 };
+        if player_side != self.start_sign {
+            return false; // past the start line
+        }
         self.spawn_origin = p;
         self.spawn_yaw = self.ps.viewangles[1];
+        self.spawn_pitch = self.ps.viewangles[0];
         true
     }
 
