@@ -74,6 +74,11 @@ async function main() {
           binds = b;
           actionByCode = codeToAction(b);
         },
+        onPlayMap: (map) => {
+          menu?.setOpen(false);
+          mapInput.value = map;
+          void loadMap(map);
+        },
       },
       (open) => {
         // Release pointer lock when opening the menu so the mouse is usable.
@@ -100,8 +105,8 @@ async function main() {
   }
 }
 
-async function loadMap() {
-  const name = mapInput.value.trim();
+async function loadMap(explicitName?: string) {
+  const name = (explicitName ?? mapInput.value).trim();
   if (!name || !memory) return;
   setStatus(`loading ${name}…`);
   try {

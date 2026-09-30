@@ -4,6 +4,16 @@
 import { Settings, saveSettings, loadSettings, encodeConfig, decodeConfig } from "../settings";
 import { fetchLeaderboard, getIdentity } from "../net/leaderboard";
 import { ACTIONS, BindMap, displayCode } from "../binds";
+import {
+  MapInfo,
+  getCatalog,
+  searchMaps,
+  parseVote,
+  resolveVote,
+  getFavorites,
+  toggleFavorite,
+  isFavorite,
+} from "../maps";
 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
@@ -18,6 +28,7 @@ export interface SettingsCallbacks {
   onFov: (fov: number) => void;
   onSensitivity: (sens: number) => void;
   onBinds: (binds: BindMap) => void;
+  onPlayMap: (map: string) => void;
 }
 
 export class Menu {
@@ -37,10 +48,17 @@ export class Menu {
   private bindsEl: HTMLElement;
   private lbMapInput: HTMLInputElement;
   private lbRefreshBtn: HTMLButtonElement;
+  private voteInput: HTMLInputElement;
+  private votePlayBtn: HTMLButtonElement;
+  private voteResultEl: HTMLElement;
+  private mapsSearchInput: HTMLInputElement;
+  private mapsListEl: HTMLElement;
+  private favoritesListEl: HTMLElement;
   private cb: SettingsCallbacks;
   private onToggle: (open: boolean) => void;
   private captureAction: string | null = null;
   private lbMap = "";
+  private catalog: MapInfo[] | null = null;
 
   constructor(cb: SettingsCallbacks, onToggle: (open: boolean) => void) {
     this.cb = cb;
@@ -61,11 +79,18 @@ export class Menu {
     this.bindsEl = document.getElementById("binds")!;
     this.lbMapInput = document.getElementById("lb-map-input") as HTMLInputElement;
     this.lbRefreshBtn = document.getElementById("lb-refresh") as HTMLButtonElement;
+    this.voteInput = document.getElementById("vote-input") as HTMLInputElement;
+    this.votePlayBtn = document.getElementById("vote-play") as HTMLButtonElement;
+    this.voteResultEl = document.getElementById("vote-result")!;
+    this.mapsSearchInput = document.getElementById("maps-search-input") as HTMLInputElement;
+    this.mapsListEl = document.getElementById("maps-list")!;
+    this.favoritesListEl = document.getElementById("favorites-list")!;
 
     this.bind();
     this.bindTabs();
     this.bindConfigButtons();
     this.bindLeaderboardControls();
+    this.bindMapsControls();
     this.applyAll();
   }
 
@@ -78,7 +103,28 @@ export class Menu {
         const pageId = tab.dataset.page;
         for (const t of tabs) t.classList.toggle("active", t === tab);
         for (const p of pages) p.classList.toggle("active", p.id === `page-${pageId}`);
+        if (pageId === "maps") this.ensureCatalogAndRender();
+        if (pageId === "favorites") this.ensureCatalogAndRenderFavorites();
       });
+    }
+  }
+
+  /** Load the catalog (once) and render the maps list. */
+  async ensureCatalogAndRender() {
+    try {
+      await this.getCatalog();
+      this.renderMapsList();
+    } catch {
+      this.mapsListEl.innerHTML = `<div class="map-row" style="color:#5a6472">catalog unavailable</div>`;
+    }
+  }
+
+  async ensureCatalogAndRenderFavorites() {
+    try {
+      await this.getCatalog();
+      this.renderFavorites();
+    } catch {
+      this.favoritesListEl.innerHTML = `<div class="map-row" style="color:#5a6472">catalog unavailable</div>`;
     }
   }
 
@@ -94,6 +140,111 @@ export class Menu {
         if (map) void this.refreshLeaderboard(map);
       }
     });
+  }
+
+  /** Map voting + search + favorites controls. */
+  private bindMapsControls() {
+    const doVote = async () => {
+      const input = this.voteInput.value.trim();
+      if (!input) return;
+      const maps = await this.getCatalog();
+      const req = parseVote(input);
+      if (!req) {
+        this.voteResultEl.textContent = "invalid vote";
+        return;
+      }
+      const map = resolveVote(maps, req);
+      if (!map) {
+        this.voteResultEl.textContent = `no map matched: ${input}`;
+        return;
+      }
+      this.voteResultEl.textContent = `voting… ${map}`;
+      this.cb.onPlayMap(map);
+    };
+    this.votePlayBtn.addEventListener("click", () => void doVote());
+    this.voteInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") void doVote();
+    });
+
+    this.mapsSearchInput.addEventListener("input", () => this.renderMapsList());
+  }
+
+  async getCatalog(): Promise<MapInfo[]> {
+    if (!this.catalog) this.catalog = await getCatalog();
+    return this.catalog;
+  }
+
+  /** Render the searchable map list (search results or, if empty, favorites). */
+  renderMapsList() {
+    if (!this.catalog) return;
+    const q = this.mapsSearchInput.value.trim();
+    const results = searchMaps(this.catalog, q).slice(0, 200);
+    this.mapsListEl.innerHTML = "";
+    for (const m of results) {
+      this.mapsListEl.appendChild(this.makeMapRow(m));
+    }
+  }
+
+  renderFavorites() {
+    if (!this.catalog) {
+      this.favoritesListEl.innerHTML = `<div class="map-row" style="color:#5a6472">loading…</div>`;
+      return;
+    }
+    const favs = getFavorites();
+    if (favs.length === 0) {
+      this.favoritesListEl.innerHTML = `<div class="map-row" style="color:#5a6472">no favorites yet — click ☆ on a map</div>`;
+      return;
+    }
+    this.favoritesListEl.innerHTML = "";
+    const byName = new Map(this.catalog.map((m) => [m.map_name.toLowerCase(), m]));
+    for (const name of favs) {
+      const m = byName.get(name);
+      if (m) this.favoritesListEl.appendChild(this.makeMapRow(m));
+    }
+  }
+
+  private makeMapRow(m: MapInfo): HTMLButtonElement {
+    const row = document.createElement("button");
+    row.className = "map-row";
+
+    // Star (favorite toggle).
+    const star = document.createElement("span");
+    star.className = "fav-star";
+    star.textContent = isFavorite(m.map_name) ? "★" : "☆";
+    star.title = "toggle favorite";
+
+    const name = document.createElement("span");
+    name.className = "map-name";
+    name.textContent = m.map_name;
+
+    const author = document.createElement("span");
+    author.className = "map-author";
+    author.textContent = m.author ?? m.game ?? "";
+
+    const tags: string[] = [];
+    if (m.has_slick) tags.push("slick");
+    if (m.has_rocket_launcher) tags.push("rocket");
+    if (m.has_plasmagun) tags.push("plasma");
+    if (m.has_grenade_launcher) tags.push("grenade");
+    if (m.has_jumppad) tags.push("jp");
+    const tagsEl = document.createElement("span");
+    tagsEl.className = "map-tags";
+    tagsEl.textContent = tags.join(" ");
+
+    row.append(star, name, author, tagsEl);
+
+    // Click = play the map.
+    row.addEventListener("click", () => this.cb.onPlayMap(m.map_name));
+
+    // Star click = toggle favorite (stop propagation).
+    star.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleFavorite(m.map_name);
+      star.textContent = isFavorite(m.map_name) ? "★" : "☆";
+      this.renderFavorites();
+    });
+
+    return row;
   }
 
   /** Wire the share-config copy/apply buttons. */

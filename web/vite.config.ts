@@ -17,6 +17,10 @@ export default defineConfig({
         target: "http://127.0.0.1:4173",
         changeOrigin: true,
       },
+      "/catalog": {
+        target: "http://127.0.0.1:4173",
+        changeOrigin: true,
+      },
       "/api": {
         target: "http://127.0.0.1:4174",
         changeOrigin: true,

@@ -318,6 +318,85 @@
         color: #5a6472;
         margin-top: 20px;
       }
+      .maps-vote,
+      .maps-search {
+        display: flex;
+        gap: 8px;
+        width: 400px;
+        max-width: 90vw;
+      }
+      .maps-vote input,
+      .maps-search input {
+        flex: 1;
+        background: #11141c;
+        border: 1px solid #2a3040;
+        color: #cfd4dd;
+        padding: 7px 10px;
+        font: inherit;
+      }
+      .maps-vote button {
+        background: #11141c;
+        border: 1px solid #5ce27a;
+        color: #5ce27a;
+        padding: 7px 14px;
+        font: inherit;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .vote-result {
+        width: 400px;
+        max-width: 90vw;
+        color: #ffb238;
+        min-height: 16px;
+      }
+      .maps-list {
+        width: 400px;
+        max-width: 90vw;
+        max-height: 50vh;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .map-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 10px;
+        background: #11141c;
+        border: 1px solid #2a3040;
+        cursor: pointer;
+        text-align: left;
+        font: inherit;
+        color: #cfd4dd;
+      }
+      .map-row:hover {
+        border-color: #fa00ff;
+      }
+      .map-row .map-name {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .map-row .map-author {
+        color: #5a6472;
+        font-size: 11px;
+        max-width: 120px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .map-row .map-tags {
+        color: #7fa8d8;
+        font-size: 11px;
+        letter-spacing: 0.5px;
+      }
+      .map-row .fav-star {
+        color: #ffb238;
+        font-size: 14px;
+        flex-shrink: 0;
+      }
       .menu-hint {
         color: #5a6472;
       }
@@ -397,6 +476,7 @@
         <button class="tab active" data-page="leaderboards">Leaderboards</button>
         <button class="tab" data-page="settings">Settings</button>
         <button class="tab" data-page="maps">Maps</button>
+        <button class="tab" data-page="favorites">Favorites</button>
       </nav>
 
       <section class="page active" id="page-leaderboards">
@@ -447,7 +527,20 @@
 
       <section class="page" id="page-maps">
         <div class="page-title">Maps</div>
-        <p class="maps-placeholder">Map voting &amp; browsing coming soon.</p>
+        <div class="maps-vote">
+          <input id="vote-input" placeholder="vote &lt;map&gt; · random · random slick · random rocket" />
+          <button id="vote-play">Vote &amp; play</button>
+        </div>
+        <div id="vote-result" class="vote-result"></div>
+        <div class="maps-search">
+          <input id="maps-search-input" placeholder="search maps…" />
+        </div>
+        <div id="maps-list" class="maps-list"></div>
+      </section>
+
+      <section class="page" id="page-favorites">
+        <div class="page-title">Favorite maps</div>
+        <div id="favorites-list" class="maps-list"></div>
       </section>
 
       <p class="menu-hint">Escape to close</p>
