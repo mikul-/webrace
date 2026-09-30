@@ -416,7 +416,7 @@ function loop() {
     // from the aspect ratio (tan(hfov/2) / aspect). Same model as Warfork/q3.
     const hfov = (fov * Math.PI) / 180;
     const vfov = 2 * Math.atan(Math.tan(hfov / 2) / aspect);
-    const proj = perspective(vfov, aspect, 8, 200000);
+    const proj = perspective(vfov, aspect, 1, 200000);
     const eye = core.session_eye(sessionId) as unknown as Float32Array;
     const angles = core.session_angles(sessionId) as unknown as Float32Array;
     const view = lookAt([eye[0], eye[1], eye[2]], angles[0], angles[1]);
