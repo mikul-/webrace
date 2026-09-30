@@ -17,10 +17,10 @@ const inflate = promisify(inflateRaw);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const WARFORK_DIR = process.argv[2] || join(homedir(), ".local", "share", "warfork-2.1");
-const PORT = Number(process.env.PORT || 4173);
+const PORT = Number(process.env.MAP_PORT || process.env.PORT || 4173);
 const PADPORK = "https://padpork.org";
 // Where downloaded padpork pk3s are cached (persists across restarts).
-const PK3_CACHE_DIR = join(__dirname, ".pk3-cache");
+const PK3_CACHE_DIR = process.env.PK3_CACHE_DIR || join(__dirname, ".pk3-cache");
 
 // ---- minimal zip central-directory reader (pk3 files are zips) ----
 

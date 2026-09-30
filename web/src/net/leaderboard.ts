@@ -1,5 +1,7 @@
 // Client-side leaderboard + nickname helpers.
 
+import { api } from "../base";
+
 const NICK_KEY = "webrace.nickname";
 const TOKEN_KEY = "webrace.token";
 
@@ -17,7 +19,7 @@ export function getIdentity(): { nickname: string; token: string } | null {
 
 /** Register (or look up) a nickname, storing the returned token. */
 export async function registerNickname(nickname: string): Promise<{ nickname: string; token: string }> {
-  const res = await fetch("/api/nickname", {
+  const res = await fetch(api("/api/nickname"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ nickname }),
@@ -37,7 +39,7 @@ export async function registerNickname(nickname: string): Promise<{ nickname: st
 
 /** Submit a finished race time to the leaderboard. */
 export async function submitTime(token: string, map: string, timeMs: number, splits: number[]): Promise<void> {
-  const res = await fetch("/api/times", {
+  const res = await fetch(api("/api/times"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token, map, timeMs, splits }),
@@ -50,7 +52,7 @@ export async function submitTime(token: string, map: string, timeMs: number, spl
 
 /** Fetch the leaderboard for a map. */
 export async function fetchLeaderboard(map: string): Promise<Array<{ nickname: string; time_ms: number }>> {
-  const res = await fetch(`/api/leaderboard?map=${encodeURIComponent(map)}`);
+  const res = await fetch(api(`/api/leaderboard?map=${encodeURIComponent(map)}`));
   const data = await res.json();
   return data.entries ?? [];
 }

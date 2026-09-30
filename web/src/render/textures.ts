@@ -4,6 +4,8 @@
 // files in the pk3 archives; the map-server serves them at /tex/<name>.
 // Browser can decode jpg/png natively; TGA needs a small manual decoder.
 
+import { api } from "../base";
+
 export interface DecodedImage {
   width: number;
   height: number;
@@ -13,7 +15,7 @@ export interface DecodedImage {
 
 /** Load a shader name's texture image from the map-server and decode it. */
 export async function loadTexture(shaderName: string): Promise<DecodedImage | null> {
-  const url = "/tex/" + encodeURIComponent(shaderName);
+  const url = api("/tex/" + encodeURIComponent(shaderName));
   try {
     const res = await fetch(url);
     if (!res.ok) {

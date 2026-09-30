@@ -5,6 +5,7 @@
 
 import { Renderer, perspective, lookAt, multiply } from "./render/renderer";
 import { fetchBsp } from "./sim/map";
+import { api } from "./base";
 import { loadTexture } from "./render/textures";
 import { getIdentity, registerNickname, submitTime } from "./net/leaderboard";
 import { Menu } from "./ui/menu";
@@ -122,7 +123,7 @@ async function loadMap(explicitName?: string) {
     currentMap = name.toLowerCase();
     submitGuard = false;
 
-    const url = `/maps/${name}.bsp`;
+    const url = api(`/maps/${name}.bsp`);
     const bytes = await fetchBsp(url);
     const mapId = core.bsp_parse(name, bytes);
 

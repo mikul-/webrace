@@ -1,6 +1,12 @@
 import { defineConfig } from "vite";
 
+// In production the app is served under /webrace/ (Caddy subdirectory). Builds
+// with `vite build --base=/webrace/` set base automatically; here we only
+// override it when the WB_BASE env var is set, so `npm run dev` stays at root.
+const base = process.env.WB_BASE ?? "/";
+
 export default defineConfig({
+  base,
   build: {
     target: "es2022",
     sourcemap: true,

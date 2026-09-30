@@ -1,0 +1,18 @@
+services:
+  webrace:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: webrace
+    restart: unless-stopped
+    ports:
+      - "4173:4173"
+      - "4174:4174"
+    volumes:
+      - webrace-data:/app/data
+    environment:
+      MAP_PORT: "4173"
+      LB_PORT: "4174"
+
+volumes:
+  webrace-data:

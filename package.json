@@ -7,6 +7,7 @@
     "leaderboard": "node server/leaderboard.mjs",
     "dev": "npm --prefix web run dev",
     "build": "npm --prefix web run build",
+    "build:prod": "WB_BASE=/webrace/ npm --prefix web run build",
     "test": "cargo test --manifest-path core/Cargo.toml"
   }
 }

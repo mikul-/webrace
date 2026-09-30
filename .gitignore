@@ -19,3 +19,4 @@ server/*.db-shm
 server/.pk3-cache/
 
 *.zip
+web/dist/

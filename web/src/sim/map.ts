@@ -3,6 +3,8 @@
 // a local directory (via the Vite dev server proxy to the browser filesystem
 // is not possible), so it fetches maps via HTTP.
 
+import { api } from "../base";
+
 export interface MapMeta {
   name: string;
   url: string;
@@ -25,7 +27,7 @@ export function q3dfUrl(name: string): string {
  * In production we'll fetch from the backend which unzips pk3s on demand.
  */
 export function localBspUrl(name: string): string {
-  return `/maps/${name}.bsp`;
+  return api(`/maps/${name}.bsp`);
 }
 
 /**

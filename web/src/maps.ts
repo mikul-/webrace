@@ -1,6 +1,8 @@
 // Map catalog: fetches the padpork map list (via our server proxy) and
 // provides search, random selection (with keywords), and favorites.
 
+import { api } from "./base";
+
 export interface MapInfo {
   map_name: string;
   normalized_name: string;
@@ -37,7 +39,7 @@ let catalogPromise: Promise<MapInfo[]> | null = null;
 
 /** Fetch (and cache) the map catalog. */
 async function fetchCatalog(): Promise<MapInfo[]> {
-  const res = await fetch("/catalog");
+  const res = await fetch(api("/catalog"));
   if (!res.ok) throw new Error(`catalog ${res.status}`);
   const data = (await res.json()) as Catalog;
   return data.items ?? [];

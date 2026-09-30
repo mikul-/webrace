@@ -18,8 +18,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PORT = Number(process.env.PORT ?? 4174);
-const DB_PATH = join(__dirname, "data.db");
+const PORT = Number(process.env.LB_PORT || process.env.PORT || 4174);
+const DB_PATH = process.env.DB_PATH || join(__dirname, "data.db");
 
 const db = new DatabaseSync(DB_PATH);
 db.exec(`
