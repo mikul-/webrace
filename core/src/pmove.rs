@@ -494,7 +494,9 @@ impl Pmove {
             let max_mag = fwd.abs().max(side.abs());
             wishspeed = self.max_speed * max_mag / 127.0;
         }
-        wishspeed = wishspeed.min(self.max_speed);
+        // Crouching caps the ground move speed (Warfork crouch speed).
+        let speed_cap = if ps.crouched { crate::CROUCH_SPEED } else { self.max_speed };
+        wishspeed = wishspeed.min(speed_cap);
 
         self.accelerate(ps, wishvel, wishspeed, PM_ACCELERATE);
     }

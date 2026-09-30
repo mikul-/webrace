@@ -27,7 +27,8 @@ pub const PM_FRICTION: f32 = 8.0;
 pub const PM_WISHSPEED: f32 = 30.0;
 
 pub const WALK_SPEED: f32 = 160.0;
-pub const CROUCH_SPEED: f32 = 100.0;
+/// Crouch move speed (Warfork: crouch shares the 160 walk speed).
+pub const CROUCH_SPEED: f32 = 160.0;
 
 /// Warfork DEFAULT_JUMPSPEED (280; gs_public.h) and dash/walljump speeds.
 pub const JUMP_SPEED: f32 = 280.0;
