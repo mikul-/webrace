@@ -502,10 +502,7 @@ impl Pmove {
         let speed_cap = if ps.crouched { crate::CROUCH_SPEED } else { self.max_speed };
         wishspeed = wishspeed.min(speed_cap);
 
-        // On slick surfaces you have little ground control (Warfork uses
-        // airaccelerate=1 rather than pm_accelerate=12), so you keep sliding.
-        let accel = if ps.ground_flags & SURF_SLICK != 0 { crate::PM_AIRACCELERATE } else { PM_ACCELERATE };
-        self.accelerate(ps, wishvel, wishspeed, accel);
+        self.accelerate(ps, wishvel, wishspeed, PM_ACCELERATE);
     }
 
     fn air_move(
