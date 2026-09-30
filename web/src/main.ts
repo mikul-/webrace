@@ -303,7 +303,17 @@ function dispatchAction(action: Action): void {
   }
 }
 
+// True when the event target is a text input/textarea/contenteditable (so we
+// don't hijack typing keys like Space).
+function isTypingTarget(e: Event): boolean {
+  const t = e.target as HTMLElement | null;
+  if (!t) return false;
+  const tag = t.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || t.isContentEditable;
+}
+
 window.addEventListener("keydown", (e) => {
+  if (isTypingTarget(e)) return;
   const action = actionByCode.get(e.code);
   if (!action) return;
   if (e.repeat) return;
@@ -315,6 +325,7 @@ window.addEventListener("keydown", (e) => {
   }
 });
 window.addEventListener("keyup", (e) => {
+  if (isTypingTarget(e)) return;
   const action = actionByCode.get(e.code);
   if (action && action in keys) keys[action] = false;
 });

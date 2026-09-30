@@ -59,6 +59,10 @@ export class Menu {
   private captureAction: string | null = null;
   private lbMap = "";
   private catalog: MapInfo[] | null = null;
+  private mapResults: MapInfo[] = [];
+  private mapRendered = 0;
+  private mapSentinel: HTMLElement | null = null;
+  private mapObserver: IntersectionObserver | null = null;
 
   constructor(cb: SettingsCallbacks, onToggle: (open: boolean) => void) {
     this.cb = cb;
@@ -174,15 +178,47 @@ export class Menu {
     return this.catalog;
   }
 
-  /** Render the searchable map list (search results or, if empty, favorites). */
+  /** Render the searchable map list (incremental: load more on scroll). */
   renderMapsList() {
     if (!this.catalog) return;
     const q = this.mapsSearchInput.value.trim();
-    const results = searchMaps(this.catalog, q).slice(0, 200);
+    const results = searchMaps(this.catalog, q);
+    this.mapResults = results;
+    this.mapRendered = 0;
     this.mapsListEl.innerHTML = "";
-    for (const m of results) {
-      this.mapsListEl.appendChild(this.makeMapRow(m));
+    this.appendMapBatch();
+  }
+
+  private appendMapBatch() {
+    if (!this.catalog) return;
+    const BATCH = 100;
+    const end = Math.min(this.mapRendered + BATCH, this.mapResults.length);
+    for (let i = this.mapRendered; i < end; i++) {
+      this.mapsListEl.appendChild(this.makeMapRow(this.mapResults[i]));
     }
+    this.mapRendered = end;
+    this.updateMapSentinel();
+  }
+
+  private updateMapSentinel() {
+    // Remove any old sentinel.
+    this.mapSentinel?.remove();
+    if (this.mapRendered >= this.mapResults.length) {
+      this.mapSentinel = null;
+      return;
+    }
+    const sentinel = document.createElement("div");
+    sentinel.className = "map-sentinel";
+    sentinel.style.height = "2px";
+    this.mapsListEl.appendChild(sentinel);
+    this.mapSentinel = sentinel;
+    if (this.mapObserver) this.mapObserver.disconnect();
+    this.mapObserver = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) {
+        this.appendMapBatch();
+      }
+    });
+    this.mapObserver.observe(sentinel);
   }
 
   renderFavorites() {
