@@ -233,6 +233,58 @@
       .menu-hint {
         color: #5a6472;
       }
+      .binds {
+        width: 360px;
+        max-width: 90vw;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .bind-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .bind-label {
+        color: #9aa3b2;
+      }
+      .bind-key {
+        background: #11141c;
+        border: 1px solid #2a3040;
+        color: #fa00ff;
+        padding: 4px 12px;
+        font: inherit;
+        cursor: pointer;
+        min-width: 90px;
+        text-align: center;
+      }
+      .bind-key:hover {
+        border-color: #fa00ff;
+      }
+      .config {
+        width: 360px;
+        max-width: 90vw;
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .config input {
+        flex: 1;
+        background: #11141c;
+        border: 1px solid #2a3040;
+        color: #cfd4dd;
+        padding: 6px 8px;
+        font: inherit;
+      }
+      .config button {
+        background: #11141c;
+        border: 1px solid #7fa8d8;
+        color: #7fa8d8;
+        padding: 6px 12px;
+        font: inherit;
+        cursor: pointer;
+        white-space: nowrap;
+      }
     </style>
   </head>
   <body>
@@ -248,7 +300,7 @@
       <h1>webrace</h1>
       <p id="status">loading…</p>
       <input id="nickname" placeholder="nickname (for leaderboards)" maxlength="20" />
-      <input id="map" placeholder="map name (e.g. bipracer3)" value="" />
+      <input id="map" placeholder="rek-dire-wjfix-allslick" value="" />
       <button id="play">Play</button>
       <pre id="log"></pre>
     </div>
@@ -280,7 +332,15 @@
       </div>
       <h2>Leaderboard</h2>
       <div id="leaderboard" class="leaderboard"></div>
-      <p class="menu-hint">M to close</p>
+      <h2>Key binds</h2>
+      <div id="binds" class="binds"></div>
+      <h2>Config</h2>
+      <div class="config">
+        <button id="share-config">Copy share code</button>
+        <input id="config-code" placeholder="paste share code" />
+        <button id="apply-config">Apply</button>
+      </div>
+      <p class="menu-hint">Escape to close</p>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

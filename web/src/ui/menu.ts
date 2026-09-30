@@ -1,12 +1,14 @@
 // Settings menu wiring: syncs the menu controls with the Settings object and
 // applies changes to the game + localStorage.
 
-import { Settings, saveSettings, loadSettings } from "../settings";
+import { Settings, saveSettings, loadSettings, encodeConfig, decodeConfig } from "../settings";
 import { fetchLeaderboard } from "../net/leaderboard";
+import { ACTIONS, BindMap, displayCode } from "../binds";
 
 export interface SettingsCallbacks {
   onFov: (fov: number) => void;
   onSensitivity: (sens: number) => void;
+  onBinds: (binds: BindMap) => void;
 }
 
 export class Menu {
@@ -23,8 +25,10 @@ export class Menu {
   private xhairSizeValue: HTMLElement;
   private xhairEl: HTMLElement;
   private leaderboardEl: HTMLElement;
+  private bindsEl: HTMLElement;
   private cb: SettingsCallbacks;
   private onToggle: (open: boolean) => void;
+  private captureAction: string | null = null;
 
   constructor(cb: SettingsCallbacks, onToggle: (open: boolean) => void) {
     this.cb = cb;
@@ -42,9 +46,41 @@ export class Menu {
     this.xhairSizeValue = document.getElementById("xhair-size-value")!;
     this.xhairEl = document.getElementById("crosshair")!;
     this.leaderboardEl = document.getElementById("leaderboard")!;
+    this.bindsEl = document.getElementById("binds")!;
 
     this.bind();
+    this.bindConfigButtons();
     this.applyAll();
+  }
+
+  /** Wire the share-config copy/apply buttons. */
+  private bindConfigButtons() {
+    const shareBtn = document.getElementById("share-config");
+    const codeInput = document.getElementById("config-code") as HTMLInputElement;
+    const applyBtn = document.getElementById("apply-config");
+    shareBtn?.addEventListener("click", () => {
+      const code = encodeConfig(this.settings);
+      if (!code) return;
+      try {
+        void navigator.clipboard.writeText(code);
+        shareBtn!.textContent = "copied!";
+        setTimeout(() => (shareBtn!.textContent = "Copy share code"), 1500);
+      } catch {
+        codeInput.value = code;
+      }
+    });
+    applyBtn?.addEventListener("click", () => {
+      const decoded = decodeConfig(codeInput.value.trim());
+      if (!decoded) {
+        codeInput.value = "";
+        codeInput.placeholder = "invalid code";
+        return;
+      }
+      this.settings = { ...this.settings, ...decoded };
+      saveSettings(this.settings);
+      this.applyAll();
+      codeInput.value = "";
+    });
   }
 
   private bind() {
@@ -124,6 +160,9 @@ export class Menu {
     this.xhairSizeValue.textContent = `${this.settings.crosshairSize}px`;
     this.xhairEl.style.width = `${this.settings.crosshairSize}px`;
     this.xhairEl.style.height = `${this.settings.crosshairSize}px`;
+
+    this.cb.onBinds({ ...this.settings.binds });
+    this.renderBinds();
   }
 
   /** Open/close the menu. */
@@ -168,5 +207,82 @@ export class Menu {
     } catch (e) {
       this.leaderboardEl.textContent = "leaderboard unavailable";
     }
+  }
+
+  /** Render the bind list with editable entries. */
+  private renderBinds() {
+    if (!this.bindsEl) return;
+    this.bindsEl.innerHTML = "";
+    for (const a of ACTIONS) {
+      // Find the code bound to this action.
+      let code = "";
+      for (const [c, act] of Object.entries(this.settings.binds)) {
+        if (act === a.id) {
+          code = c;
+          break;
+        }
+      }
+      const row = document.createElement("div");
+      row.className = "bind-row";
+      const label = document.createElement("span");
+      label.className = "bind-label";
+      label.textContent = a.label;
+      const btn = document.createElement("button");
+      btn.className = "bind-key";
+      btn.textContent = this.captureAction === a.id ? "press a key…" : displayCode(code);
+      btn.addEventListener("click", () => this.startCapture(a.id));
+      row.append(label, btn);
+      this.bindsEl.append(row);
+    }
+  }
+
+  /** Begin capturing a new key/mouse bind for an action. */
+  private startCapture(action: string) {
+    this.captureAction = action;
+    this.renderBinds();
+
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const code = e.code;
+      if (code === "Escape") {
+        this.captureAction = null;
+      } else {
+        this.setBind(action, code);
+      }
+      cleanup();
+      this.renderBinds();
+    };
+    const onMouse = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const code = "Mouse" + e.button;
+      this.setBind(action, code);
+      cleanup();
+      this.renderBinds();
+    };
+    const cleanup = () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("mousedown", onMouse, true);
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("mousedown", onMouse, true);
+  }
+
+  /** Set a bind, removing any conflicting binding for the same code. */
+  private setBind(action: string, code: string) {
+    // Remove any existing binding for this code.
+    for (const c of Object.keys(this.settings.binds)) {
+      if (c === code) delete this.settings.binds[c];
+    }
+    // Remove any existing binding for this action.
+    for (const [c] of Object.entries(this.settings.binds)) {
+      const a = this.settings.binds[c];
+      if (a === action) delete this.settings.binds[c];
+    }
+    this.settings.binds[code] = action;
+    this.captureAction = null;
+    saveSettings(this.settings);
+    this.cb.onBinds({ ...this.settings.binds });
   }
 }

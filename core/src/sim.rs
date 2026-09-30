@@ -60,6 +60,9 @@ pub struct Session {
     spawn_origin: [f32; 3],
     spawn_yaw: f32,
     race: Race,
+    /// Bounds the position-save zone (the start gate AABB). Outside this the
+    /// player cannot set a new spawn. Updated as the race passes checkpoints.
+    save_zone: Option<[[f32; 3]; 2]>,
 }
 
 impl Session {
@@ -87,6 +90,12 @@ impl Session {
 
         let yaw = ps.viewangles[1];
         let race = Race::new(bsp.race_gates.clone());
+        // The save zone starts as the first gate that is a Start (or any gate).
+        let save_zone = bsp
+            .race_gates
+            .iter()
+            .find(|g| g.kind == RaceGateKind::Start)
+            .map(|g| [g.mins, g.maxs]);
 
         Ok(Session {
             pmove,
@@ -101,6 +110,7 @@ impl Session {
             spawn_origin,
             spawn_yaw,
             race,
+            save_zone,
         })
     }
 
@@ -122,6 +132,28 @@ impl Session {
 
     pub fn set_sensitivity(&mut self, s: f32) {
         self.mouse.sensitivity = s;
+    }
+
+    /// Save the current position as the new spawn point. Returns true on
+    /// success. Only allowed within the current save zone (the start gate, or
+    /// later the current checkpoint gate in practice mode).
+    pub fn position_save(&mut self) -> bool {
+        let Some([mins, maxs]) = self.save_zone else {
+            return false;
+        };
+        let p = self.ps.origin;
+        let inside = p[0] >= mins[0]
+            && p[0] <= maxs[0]
+            && p[1] >= mins[1]
+            && p[1] <= maxs[1]
+            && p[2] >= mins[2]
+            && p[2] <= maxs[2];
+        if !inside {
+            return false;
+        }
+        self.spawn_origin = p;
+        self.spawn_yaw = self.ps.viewangles[1];
+        true
     }
 
     /// Add relative mouse motion (raw input, `movementX`/`movementY`).

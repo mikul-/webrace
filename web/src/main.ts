@@ -8,6 +8,7 @@ import { fetchBsp } from "./sim/map";
 import { loadTexture } from "./render/textures";
 import { getIdentity, registerNickname, submitTime } from "./net/leaderboard";
 import { Menu } from "./ui/menu";
+import { BindMap, DEFAULT_BINDS, codeToAction, mouseButtonToCode, Action } from "./binds";
 import init, * as core from "../pkg/webrace_core.js";
 
 const overlay = document.getElementById("overlay")!;
@@ -33,9 +34,14 @@ let currentMap = "";
 let submitGuard = false; // true once we've submitted the current finish
 let fov = 140; // horizontal FOV (updated by the settings menu)
 let menu: Menu | null = null;
+let binds: BindMap = { ...DEFAULT_BINDS };
+let actionByCode = codeToAction(binds);
 
-// Key state.
-const keys = { forward: false, back: false, left: false, right: false, jump: false, crouch: false, special: false };
+// Key state (held actions).
+const keys: Record<string, boolean> = {
+  forward: false, back: false, moveleft: false, moveright: false,
+  jump: false, crouch: false, special: false, attack: false,
+};
 
 function setStatus(s: string) {
   statusEl.textContent = s;
@@ -64,6 +70,10 @@ async function main() {
         onSensitivity: (s) => {
           if (sessionId !== null) core.session_set_sensitivity(sessionId, s);
         },
+        onBinds: (b) => {
+          binds = b;
+          actionByCode = codeToAction(b);
+        },
       },
       (open) => {
         // Release pointer lock when opening the menu so the mouse is usable.
@@ -74,14 +84,6 @@ async function main() {
         for (const k of Object.keys(keys) as (keyof typeof keys)[]) keys[k] = false;
       },
     );
-
-    // M toggles the menu.
-    window.addEventListener("keydown", (e) => {
-      if (e.code === "KeyM" && !e.repeat && menu) {
-        menu.setOpen(!menu.isOpen());
-        if (menu.isOpen() && currentMap) void menu.refreshLeaderboard(currentMap);
-      }
-    });
 
     // Prefill nickname from stored identity.
     const existing = getIdentity();
@@ -270,38 +272,57 @@ document.addEventListener("mousemove", (e) => {
   }
 });
 
-const KEYMAP: Record<string, keyof typeof keys> = {
-  KeyW: "forward", ArrowUp: "forward",
-  KeyS: "back", ArrowDown: "back",
-  KeyA: "left", ArrowLeft: "left",
-  KeyD: "right", ArrowRight: "right",
-  ShiftLeft: "crouch", ControlLeft: "crouch",
-  // Space = dash / wall-jump (`+special`), matching your Warfork config
-  // (`bind SPACE "+special"`, `bind MOUSE2 "+moveup"`). Jump = right-click.
-  Space: "special",
-};
+/** Dispatch a discrete (non-held) action. */
+function dispatchAction(action: Action): void {
+  switch (action) {
+    case "restart":
+      if (sessionId !== null) core.session_reset(sessionId);
+      break;
+    case "menu":
+      if (menu) {
+        menu.setOpen(!menu.isOpen());
+        if (menu.isOpen() && currentMap) void menu.refreshLeaderboard(currentMap);
+      }
+      break;
+    case "position_save":
+      if (sessionId !== null) core.session_position_save(sessionId);
+      break;
+    default:
+      break;
+  }
+}
 
 window.addEventListener("keydown", (e) => {
-  const k = KEYMAP[e.code];
-  if (k && !e.repeat) keys[k] = true;
+  const action = actionByCode.get(e.code);
+  if (!action) return;
+  if (e.repeat) return;
   if (e.code === "Space") e.preventDefault();
-
-  // 4 = restart the race (reset to spawn).
-  if (e.code === "Digit4" && !e.repeat) {
-    if (sessionId !== null) core.session_reset(sessionId);
+  if (action in keys) {
+    keys[action] = true;
+  } else {
+    dispatchAction(action);
   }
 });
 window.addEventListener("keyup", (e) => {
-  const k = KEYMAP[e.code];
-  if (k) keys[k] = false;
+  const action = actionByCode.get(e.code);
+  if (action && action in keys) keys[action] = false;
 });
 
-// Mouse buttons: right-click = jump (Warfork default), left = attack (later).
+// Mouse buttons.
 document.addEventListener("mousedown", (e) => {
-  if (e.button === 2) keys.jump = true;
+  const code = mouseButtonToCode(e.button);
+  const action = actionByCode.get(code);
+  if (!action) return;
+  if (action in keys) {
+    keys[action] = true;
+  } else {
+    dispatchAction(action);
+  }
 });
 document.addEventListener("mouseup", (e) => {
-  if (e.button === 2) keys.jump = false;
+  const code = mouseButtonToCode(e.button);
+  const action = actionByCode.get(code);
+  if (action && action in keys) keys[action] = false;
 });
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
@@ -310,8 +331,8 @@ function pushKeys() {
   if (sessionId === null) return;
   core.session_set_keys(
     sessionId,
-    keys.forward, keys.back, keys.left, keys.right,
-    keys.jump, keys.crouch, keys.special, false,
+    keys.forward, keys.back, keys.moveleft, keys.moveright,
+    keys.jump, keys.crouch, keys.special, keys.attack,
   );
 }
 

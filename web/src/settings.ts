@@ -1,10 +1,13 @@
 // Client settings (persisted to localStorage).
 
+import { BindMap, DEFAULT_BINDS } from "./binds";
+
 export interface Settings {
   fov: number;
   sensitivity: number;
   crosshairColor: string;
   crosshairSize: number;
+  binds: BindMap;
 }
 
 const KEY = "webrace.settings";
@@ -14,6 +17,7 @@ const DEFAULTS: Settings = {
   sensitivity: 1.72,
   crosshairColor: "#fa00ff",
   crosshairSize: 18,
+  binds: { ...DEFAULT_BINDS },
 };
 
 function clamp(v: number, min: number, max: number): number {
@@ -22,7 +26,7 @@ function clamp(v: number, min: number, max: number): number {
 
 /** Load settings from localStorage (with validation/clamping). */
 export function loadSettings(): Settings {
-  let s: Settings = { ...DEFAULTS };
+  let s: Settings = { ...DEFAULTS, binds: { ...DEFAULT_BINDS } };
   try {
     const raw = localStorage.getItem(KEY);
     if (raw) {
@@ -35,6 +39,10 @@ export function loadSettings(): Settings {
             ? parsed.crosshairColor
             : DEFAULTS.crosshairColor;
         s.crosshairSize = clamp(Number(parsed.crosshairSize) || DEFAULTS.crosshairSize, 4, 64);
+        if (parsed.binds && typeof parsed.binds === "object") {
+          // Merge with defaults so missing binds fall back.
+          s.binds = { ...DEFAULT_BINDS, ...parsed.binds };
+        }
       }
     }
   } catch {
@@ -49,6 +57,35 @@ export function saveSettings(s: Settings): void {
     localStorage.setItem(KEY, JSON.stringify(s));
   } catch {
     /* ignore */
+  }
+}
+
+/** Encode settings into a compact share code (base64 of JSON). */
+export function encodeConfig(s: Settings): string {
+  try {
+    const json = JSON.stringify(s);
+    // Encode to base64 URL-safe.
+    const bytes = new TextEncoder().encode(json);
+    let bin = "";
+    bytes.forEach((b) => (bin += String.fromCharCode(b)));
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  } catch {
+    return "";
+  }
+}
+
+/** Decode a share code back into settings (partial merge onto defaults). */
+export function decodeConfig(code: string): Settings | null {
+  try {
+    const b64 = code.replace(/-/g, "+").replace(/_/g, "/");
+    const bin = atob(b64);
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    const json = new TextDecoder().decode(bytes);
+    const parsed = JSON.parse(json);
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed as Settings;
+  } catch {
+    return null;
   }
 }
 

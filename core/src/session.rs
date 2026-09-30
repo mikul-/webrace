@@ -136,6 +136,19 @@ pub fn session_reset(id: usize) {
     });
 }
 
+/// Save the current position as the new spawn (only within the start zone).
+/// Returns true if the save succeeded.
+#[wasm_bindgen]
+pub fn session_position_save(id: usize) -> bool {
+    SESSIONS.with(|s| {
+        s.borrow_mut()
+            .get_mut(id)
+            .and_then(|o| o.as_mut())
+            .map(|session| session.position_save())
+            .unwrap_or(false)
+    })
+}
+
 // Race state getters.
 
 #[wasm_bindgen]
