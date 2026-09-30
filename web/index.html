@@ -322,12 +322,13 @@
       .maps-search {
         display: flex;
         gap: 8px;
-        width: 400px;
-        max-width: 90vw;
+        width: 480px;
+        max-width: 92vw;
       }
       .maps-vote input,
       .maps-search input {
         flex: 1;
+        min-width: 0;
         background: #11141c;
         border: 1px solid #2a3040;
         color: #cfd4dd;
@@ -342,10 +343,21 @@
         font: inherit;
         cursor: pointer;
         white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .vote-hint {
+        width: 480px;
+        max-width: 92vw;
+        color: #5a6472;
+        font-size: 11px;
+        margin: -4px 0 0;
+      }
+      .vote-hint code {
+        color: #7fa8d8;
       }
       .vote-result {
-        width: 400px;
-        max-width: 90vw;
+        width: 480px;
+        max-width: 92vw;
         color: #ffb238;
         min-height: 16px;
       }
@@ -528,9 +540,10 @@
       <section class="page" id="page-maps">
         <div class="page-title">Maps</div>
         <div class="maps-vote">
-          <input id="vote-input" placeholder="vote &lt;map&gt; · random · random slick · random rocket" />
+          <input id="vote-input" placeholder="vote map name, or: random, random slick, random rocket…" />
           <button id="vote-play">Vote &amp; play</button>
         </div>
+        <p class="vote-hint">Examples: <code>random</code> · <code>random slick</code> · <code>random rocket</code> · <code>random grenade</code> · <code>random plasma</code> · <code>random teleporter</code> · a map name</p>
         <div id="vote-result" class="vote-result"></div>
         <div class="maps-search">
           <input id="maps-search-input" placeholder="search maps…" />
