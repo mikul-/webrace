@@ -35,7 +35,7 @@ pub struct MouseConfig {
 impl Default for MouseConfig {
     fn default() -> Self {
         MouseConfig {
-            sensitivity: 1.72,
+            sensitivity: 2.0,
             m_yaw: 0.022,
             m_pitch: 0.022,
         }

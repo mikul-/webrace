@@ -135,11 +135,7 @@ impl Session {
             pmove,
             ps,
             angles: Angles { yaw, ..Default::default() },
-            mouse: MouseConfig {
-                sensitivity: 1.72,
-                m_yaw: 0.022,
-                m_pitch: 0.022,
-            },
+            mouse: MouseConfig::default(),
             held_cmd: Cmd::default(),
             spawn_origin,
             spawn_yaw,

@@ -13,8 +13,8 @@ export interface Settings {
 const KEY = "webrace.settings";
 
 const DEFAULTS: Settings = {
-  fov: 140,
-  sensitivity: 1.72,
+  fov: 125,
+  sensitivity: 2.0,
   crosshairColor: "#fa00ff",
   crosshairSize: 18,
   binds: { ...DEFAULT_BINDS },
