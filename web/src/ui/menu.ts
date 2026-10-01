@@ -146,9 +146,10 @@ export class Menu {
 
   /** Map voting + search + favorites controls. */
   private bindMapsControls() {
-    const doVote = async () => {
-      const input = this.voteInput.value.trim();
+    const doVote = async (explicit?: string) => {
+      const input = (explicit ?? this.voteInput.value).trim();
       if (!input) return;
+      if (explicit === undefined) this.voteInput.value = input;
       const maps = await this.getCatalog();
       const req = parseVote(input);
       if (!req) {
@@ -166,6 +167,11 @@ export class Menu {
     this.votePlayBtn.addEventListener("click", () => void doVote());
     this.voteInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") void doVote();
+    });
+
+    // Clickable example vote chips.
+    this.menuEl.querySelectorAll<HTMLButtonElement>(".vote-chip").forEach((chip) => {
+      chip.addEventListener("click", () => void doVote(chip.dataset.vote));
     });
 
     this.mapsSearchInput.addEventListener("input", () => this.renderMapsList());

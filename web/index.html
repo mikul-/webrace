@@ -395,8 +395,20 @@
         font-size: 11px;
         margin: -4px 0 0;
       }
-      .vote-hint code {
+      .vote-chip {
+        background: #11141c;
+        border: 1px solid #2a3040;
         color: #7fa8d8;
+        font: inherit;
+        font-size: 11px;
+        padding: 1px 7px;
+        border-radius: 3px;
+        cursor: pointer;
+        margin: 1px 0;
+      }
+      .vote-chip:hover {
+        border-color: #7fa8d8;
+        color: #cfd4dd;
       }
       .vote-result {
         width: 480px;
@@ -593,7 +605,7 @@
           <input id="vote-input" placeholder="vote map name, or: random, random slick, random rocket…" />
           <button id="vote-play">Vote &amp; play</button>
         </div>
-        <p class="vote-hint">Examples: <code>random</code> · <code>random slick</code> · <code>random rocket</code> · <code>random grenade</code> · <code>random plasma</code> · <code>random teleporter</code> · a map name</p>
+        <p class="vote-hint">Examples: <button class="vote-chip" data-vote="random">random</button> · <button class="vote-chip" data-vote="random slick">random slick</button> · <button class="vote-chip" data-vote="random rocket">random rocket</button> · <button class="vote-chip" data-vote="random grenade">random grenade</button> · <button class="vote-chip" data-vote="random plasma">random plasma</button> · <button class="vote-chip" data-vote="random teleporter">random teleporter</button></p>
         <div id="vote-result" class="vote-result"></div>
         <div class="maps-search">
           <input id="maps-search-input" placeholder="search maps…" />
