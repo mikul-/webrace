@@ -1,22 +1,25 @@
-// Movement HUD: renders the acceleration bar + strafe/bunny turn indicators
-// from the simulation's movement hint (velocity, wish direction, speed, accel).
+// Movement HUD: acceleration bar + strafe-jump/bunny indicator triangle.
+//
+// The strafe triangle follows the Warsow/Warfork "speedometer key hint":
+//   - it moves left/right as your view angle drifts from the optimal strafe
+//     angle (so you steer the crosshair to chase it),
+//   - it grows when you're gaining speed well and shrinks when you're not,
+//   - you keep your crosshair near the triangle's short base edge, inside it.
 
 export class MovementHud {
   private accelFill: HTMLElement;
-  private strafeLeft: SVGPolygonElement;
-  private strafeRight: SVGPolygonElement;
+  private tri: SVGPolygonElement;
   private bunnyLine: SVGLineElement;
 
   constructor() {
     this.accelFill = document.getElementById("accel-fill")!;
-    this.strafeLeft = document.getElementById("strafe-left") as unknown as SVGPolygonElement;
-    this.strafeRight = document.getElementById("strafe-right") as unknown as SVGPolygonElement;
+    this.tri = document.getElementById("strafe-tri") as unknown as SVGPolygonElement;
     this.bunnyLine = document.getElementById("bunny-line") as unknown as SVGLineElement;
   }
 
   /**
    * Update from the sim hint (8 floats):
-   *   vx, vy (=velocity), 0, wx, wy (=wish dir), 0, speed, accel
+   *   vx, vy (velocity), 0, wx, wy (wishdir), 0, speed, accel
    */
   update(hint: Float32Array | number[]) {
     const vx = hint[0];
@@ -26,47 +29,55 @@ export class MovementHud {
     const speed = hint[6];
     const accel = hint[7];
 
-    // Clamp speed to a display range (0..~1000 ups).
-    void speed;
-
-    // --- Acceleration bar ---
-    // accel is dot(velocity, wishdir); normalize to a 0..1 fill where 0.5 is
-    // "no gain", 1.0 is "gaining hard", 0.0 is "losing hard".
-    // Use a reference of ~640 ups for full-scale gain.
-    let fill = 0.5;
-    const gain = accel / 800; // full bar at ±800
-    fill = 0.5 + Math.max(-0.5, Math.min(0.5, gain));
-
+    // --- Acceleration bar (fill + color) ---
+    // dot(velocity, wishdir) > 0 = gaining. Normalize around a reference gain.
+    const fill = 0.5 + Math.max(-0.5, Math.min(0.5, accel / 800));
     this.accelFill.style.width = `${(fill * 100).toFixed(1)}%`;
     this.accelFill.style.background =
       accel > 20 ? "#5ce27a" : accel < -20 ? "#e8483a" : "#ffb238";
 
-    // --- Strafe triangles + bunny line ---
-    // Turn direction: cross(velocity, wishdir) = vx*wy - vy*wx.
-    // Positive -> turn left; negative -> turn right. Magnitude ~ misalignment.
+    // --- Strafe triangle ---
+    // Turn error: signed cross(velocity, wishdir). Sign gives the side you're
+    // misaligned toward; magnitude is the alignment error (radian-scale).
     const cross = vx * wy - vy * wx;
-    const alive = speed > 30;
+    // Alignment: how perpendicular velocity is to wish (strafe sweet spot is
+    // ~90°, dot -> 0). Quality peaks near perpendicular.
+    const perp = Math.abs(cross) / (speed + 1e-3); // sin(angle) ~ 0..1
+    const alignQuality = perp; // 1 = most perpendicular (good strafe), 0 = aligned
 
-    const leftOn = alive && cross > 4;
-    const rightOn = alive && cross < -4;
+    const moving = speed > 30;
 
-    this.strafeLeft.setAttribute(
-      "fill",
-      leftOn ? "#5ce27a" : "#3a3f4a",
+    // Triangle horizontal offset (follow the turn error). +cross = shift right.
+    const shift = Math.max(-70, Math.min(70, cross * 0.08));
+
+    // Triangle size: base half-width scales with alignment quality + speed.
+    const best = 34; // half-width at perfect alignment
+    const minW = 10;
+    const hw = moving
+      ? minW + alignQuality * best
+      : minW;
+
+    const cx = 100 + shift;
+    const baseY = 52;
+    const apexY = baseY - 8 - alignQuality * 28; // taller triangle = more gain
+
+    this.tri.setAttribute(
+      "points",
+      `${cx},${apexY} ${cx + hw},${baseY} ${cx - hw},${baseY}`,
     );
-    this.strafeRight.setAttribute(
+    this.tri.setAttribute(
       "fill",
-      rightOn ? "#5ce27a" : "#3a3f4a",
+      moving ? "rgba(90,226,122,0.28)" : "rgba(90,226,122,0.06)",
     );
+    this.tri.setAttribute("stroke", moving ? "#5ce27a" : "#3a3f4a");
 
-    // Bunny line: tilt left/right to indicate forward-bunny turn correction.
-    // When not strafing and airborne, the line leans toward the needed turn.
-    const tilt = alive ? Math.max(-14, Math.min(14, cross * 0.02)) : 0;
-    this.bunnyLine.setAttribute("x1", String(90 - tilt));
-    this.bunnyLine.setAttribute("x2", String(90 + tilt));
+    // --- Bunny line (forward-bunny turn correction, tilt left/right) ---
+    const tilt = moving ? Math.max(-16, Math.min(16, cross * 0.03)) : 0;
+    this.bunnyLine.setAttribute("x1", String(100 - tilt));
+    this.bunnyLine.setAttribute("x2", String(100 + tilt));
     this.bunnyLine.setAttribute(
       "stroke",
-      Math.abs(cross) > 50 && alive ? "#ffb238" : "#3a3f4a",
+      moving && Math.abs(cross) > 40 ? "#ffb238" : "#3a3f4a",
     );
   }
 }

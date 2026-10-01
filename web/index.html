@@ -153,13 +153,13 @@
       }
       #movehud {
         position: fixed;
-        top: calc(50% + 48px);
+        top: calc(50% + 96px);
         left: 50%;
         transform: translateX(-50%);
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 4px;
+        gap: 6px;
         pointer-events: none;
         z-index: 5;
       }
@@ -509,12 +509,11 @@
     <div id="crosshair"></div>
     <div id="timer"></div>
     <div id="movehud">
-      <div id="accel-bar"><div id="accel-fill"></div></div>
-      <svg id="strafe-hud" width="180" height="40" viewBox="0 0 180 40">
-        <polygon id="strafe-left" points="60,20 78,10 78,30" fill="#3a3f4a" />
-        <polygon id="strafe-right" points="120,20 102,10 102,30" fill="#3a3f4a" />
-        <line id="bunny-line" x1="90" y1="4" x2="90" y2="36" stroke="#3a3f4a" stroke-width="3" />
+      <svg id="strafe-hud" width="200" height="60" viewBox="0 0 200 60">
+        <polygon id="strafe-tri" points="100,8 130,52 70,52" fill="rgba(90,226,122,0.15)" stroke="#5ce27a" stroke-width="2" />
+        <line id="bunny-line" x1="100" y1="4" x2="100" y2="40" stroke="#3a3f4a" stroke-width="3" />
       </svg>
+      <div id="accel-bar"><div id="accel-fill"></div></div>
     </div>
     <div id="overlay">
       <h1>webrace</h1>
