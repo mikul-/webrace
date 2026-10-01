@@ -151,19 +151,32 @@
       #timer:empty {
         display: none;
       }
-      #movehud {
+      #strafe-hud {
         position: fixed;
-        top: calc(50% + 96px);
         left: 50%;
-        transform: translateX(-50%);
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 6px;
+        top: 50%;
+        transform: translate(-50%, -100%);
+        margin-top: -26px;
         pointer-events: none;
         z-index: 5;
+        filter: drop-shadow(0 1px 1px #000);
+      }
+      #bunny-hud {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        transform: translateX(-50%);
+        margin-top: 34px;
+        pointer-events: none;
+        z-index: 5;
+        filter: drop-shadow(0 1px 1px #000);
       }
       #accel-bar {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        transform: translateX(-50%);
+        margin-top: 72px;
         width: 140px;
         height: 6px;
         background: #1a1e26;
@@ -176,12 +189,8 @@
         background: #3a3f4a;
         transition: background 0.05s;
       }
-      #strafe-hud {
-        display: block;
-        filter: drop-shadow(0 1px 1px #000);
-      }
       #strafe-hud polygon,
-      #strafe-hud line {
+      #bunny-hud polygon {
         transition: fill 0.05s, stroke 0.05s;
       }
       #menu {
@@ -508,13 +517,13 @@
     <div id="lock"></div>
     <div id="crosshair"></div>
     <div id="timer"></div>
-    <div id="movehud">
-      <svg id="strafe-hud" width="200" height="60" viewBox="0 0 200 60">
-        <polygon id="strafe-tri" points="100,8 130,52 70,52" fill="rgba(90,226,122,0.15)" stroke="#5ce27a" stroke-width="2" />
-        <line id="bunny-line" x1="100" y1="4" x2="100" y2="40" stroke="#3a3f4a" stroke-width="3" />
-      </svg>
-      <div id="accel-bar"><div id="accel-fill"></div></div>
-    </div>
+    <svg id="strafe-hud" width="200" height="40" viewBox="0 0 200 40">
+      <polygon id="strafe-tri" points="100,4 130,36 70,36" fill="rgba(90,226,122,0.15)" stroke="#5ce27a" stroke-width="2" />
+    </svg>
+    <svg id="bunny-hud" width="200" height="20" viewBox="0 0 200 20">
+      <polygon id="bunny-tri" points="100,2 116,18 84,18" fill="rgba(255,178,56,0.15)" stroke="#ffb238" stroke-width="2" />
+    </svg>
+    <div id="accel-bar"><div id="accel-fill"></div></div>
     <div id="overlay">
       <h1>webrace</h1>
       <p id="status">loading…</p>

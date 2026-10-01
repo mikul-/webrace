@@ -1,18 +1,19 @@
-// Movement HUD: acceleration bar + strafe-jump/bunny indicator triangle.
+// Movement HUD: acceleration bar + strafe-jump/bunny-hop helpers.
 //
-// The strafe triangle points at where you get the most acceleration (the
-// optimal strafe angle), and grows when you're near it. You steer the mouse so
-// the crosshair sits inside the triangle near its short base edge.
+// - Strafe-jump (W + A/D): triangle above the crosshair points at where to move
+//   the mouse to gain the most strafe speed.
+// - Bunny-hop (only A/D): a second marker showing where to aim to keep
+//   forward-bunny acceleration. Its zone shrinks as speed rises.
 
 export class MovementHud {
   private accelFill: HTMLElement;
-  private tri: SVGPolygonElement;
-  private bunnyLine: SVGLineElement;
+  private strafeTri: SVGPolygonElement;
+  private bunnyTri: SVGPolygonElement;
 
   constructor() {
     this.accelFill = document.getElementById("accel-fill")!;
-    this.tri = document.getElementById("strafe-tri") as unknown as SVGPolygonElement;
-    this.bunnyLine = document.getElementById("bunny-line") as unknown as SVGLineElement;
+    this.strafeTri = document.getElementById("strafe-tri") as unknown as SVGPolygonElement;
+    this.bunnyTri = document.getElementById("bunny-tri") as unknown as SVGPolygonElement;
   }
 
   /**
@@ -26,6 +27,7 @@ export class MovementHud {
     const wy = hint[4];
     const speed = hint[6];
     const accel = hint[7];
+    const fwd = hint[8];
     const strafe = hint[9];
 
     // --- Acceleration bar ---
@@ -34,50 +36,66 @@ export class MovementHud {
     this.accelFill.style.background =
       accel > 20 ? "#5ce27a" : accel < -20 ? "#e8483a" : "#ffb238";
 
-    // --- Strafe triangle (points at max-accel sweet spot) ---
     const moving = speed > 30;
     const velLen = Math.hypot(vx, vy) + 1e-5;
     const vdx = vx / velLen;
     const vdy = vy / velLen;
 
-    // Signed angle from velocity to wishdir.
+    // Angle from velocity to wishdir.
     const dot = vdx * wx + vdy * wy;
     const cross = vdx * wy - vdy * wx;
-    const theta = Math.atan2(cross, dot); // -PI..PI
+    const theta = Math.atan2(cross, dot);
 
-    // Optimal strafe angle: wishdir perpendicular to velocity (theta = ±90°).
-    // We want the angle error from the nearest ±90° sweet spot.
-    // For a given strafe direction, the achievable sweet spot sign is fixed:
-    //   strafe right (+1) -> you gain when turning so theta approaches +90°.
-    //   strafe left  (-1) -> theta approaches -90°.
-    const targetTheta = Math.sign(strafe || 1) * (Math.PI / 2);
-    let err = targetTheta - theta;
-    // wrap to -PI..PI
-    err = Math.atan2(Math.sin(err), Math.cos(err));
+    // Acceleration window narrows with speed: higher speed -> tighter sweet spot.
+    const speedWindow = Math.max(0.12, 1 - speed / 900); // 1 (slow) -> ~0.12 (fast)
 
-    // How aligned (0 = perfect sweet spot, grows as you drift away).
-    const errFrac = Math.abs(err) / (Math.PI / 2);
+    const strafing = Math.abs(strafe) > 0.05;
+    const bunnyOnly = !strafing && Math.abs(fwd) < 0.05;
 
-    // Triangle horizontal offset: pushed toward the sweet-spot direction.
-    // +strafe right should place the triangle to the right of center when you
-    // need to turn right. Map err -> lateral pixels.
-    const shift = 74 * Math.sin(err);
+    if (strafing) {
+      // Strafe-jump: target theta = ±90° (wishdir perpendicular to velocity),
+      // matching the held strafe key. Show the triangle at the sweet-spot
+      // direction; keep the crosshair inside its base.
+      const target = Math.sign(strafe) * (Math.PI / 2);
+      let err = target - theta;
+      err = Math.atan2(Math.sin(err), Math.cos(err));
+      const errFrac = Math.abs(err) / (Math.PI / 2);
 
-    // Triangle scale: large + tall when at sweet spot (small err).
-    const align = 1 - Math.min(1, errFrac);
-    const hw = moving ? 10 + align * 32 : 10;
-    const baseY = 52;
-    const apexY = baseY - 8 - align * 28;
+      const shift = 74 * Math.sin(err);
+      const align = 1 - Math.min(1, errFrac / speedWindow);
+      const hw = 10 + Math.max(0, align) * 32;
+      const baseY = 36;
+      const apexY = baseY - 6 - Math.max(0, align) * 26;
+      const cx = 100 + shift;
 
-    const cx = 100 + shift;
-    this.tri.setAttribute("points", `${cx},${apexY} ${cx + hw},${baseY} ${cx - hw},${baseY}`);
-    this.tri.setAttribute("fill", moving ? "rgba(90,226,122,0.28)" : "rgba(90,226,122,0.06)");
-    this.tri.setAttribute("stroke", moving ? "#5ce27a" : "#3a3f4a");
+      this.strafeTri.setAttribute("points", `${cx},${apexY} ${cx + hw},${baseY} ${cx - hw},${baseY}`);
+      this.strafeTri.setAttribute("fill", "rgba(90,226,122,0.28)");
+      this.strafeTri.setAttribute("stroke", "#5ce27a");
+      this.strafeTri.setAttribute("opacity", "1");
+      this.bunnyTri.setAttribute("opacity", "0");
+    } else if (bunnyOnly) {
+      // Bunny-hop (A/D only): show where to aim; zone shrinks with speed.
+      // The forward-bunny sweet spot is velocity roughly aligned with wishdir,
+      // so the error is how far velocity is from the wish direction.
+      let err = theta;
+      err = Math.atan2(Math.sin(err), Math.cos(err));
 
-    // --- Bunny line (forward-bunny: tilt toward turn correction) ---
-    const tilt = moving && Math.abs(strafe) < 0.01 ? Math.max(-16, Math.min(16, Math.sin(err) * 16)) : 0;
-    this.bunnyLine.setAttribute("x1", String(100 - tilt));
-    this.bunnyLine.setAttribute("x2", String(100 + tilt));
-    this.bunnyLine.setAttribute("stroke", moving && Math.abs(strafe) < 0.01 && Math.abs(err) > 0.25 ? "#ffb238" : "#3a3f4a");
+      const shift = 74 * Math.sin(err);
+      const align = 1 - Math.min(1, Math.abs(err) / (Math.PI / 2) / speedWindow);
+      const hw = 10 + Math.max(0, align) * 32;
+      const baseY = 18;
+      const apexY = baseY - 4 - Math.max(0, align) * 12;
+      const cx = 100 + shift;
+
+      this.bunnyTri.setAttribute("points", `${cx},${apexY} ${cx + hw},${baseY} ${cx - hw},${baseY}`);
+      this.bunnyTri.setAttribute("fill", "rgba(255,178,56,0.28)");
+      this.bunnyTri.setAttribute("stroke", "#ffb238");
+      this.bunnyTri.setAttribute("opacity", moving ? "1" : "0.3");
+      this.strafeTri.setAttribute("opacity", "0");
+    } else {
+      // Not moving in a relevant way: hide both.
+      this.strafeTri.setAttribute("opacity", "0");
+      this.bunnyTri.setAttribute("opacity", "0");
+    }
   }
 }
