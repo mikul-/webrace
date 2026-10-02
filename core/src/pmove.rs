@@ -487,7 +487,7 @@ impl Pmove {
         // preserve horizontal speed (dash doesn't reduce it below dash speed).
         let hspeed = (ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1])
             .sqrt();
-        let target = hspeed.max(450.0); // dashPlayerSpeed ~ 450 ups in Warfork
+        let target = hspeed.max(crate::DASH_SPEED);
         ps.velocity[0] = dir[0] * target;
         ps.velocity[1] = dir[1] * target;
 

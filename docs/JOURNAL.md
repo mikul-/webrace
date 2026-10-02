@@ -134,6 +134,20 @@ reconstruct context without re-deriving it.
 - Regression test `stairs.rs`: the player climbs three 8-unit steps (z 24 → 48)
   and descends the far side while running, no jumping.
 
+### Spawn orientation + step-over-same-height-lip (the "can't pass start line" bug)
+- Two independent bugs combined to trap the player at spawns and flat "stuck"
+  spots on rek-dire:
+  1. `Session::new` initialized `Angles { yaw, .. }` with `yaw = ps.viewangles[1]`
+     **in radians**, but `Angles.yaw` is a **16-bit fixed-point angle** (0..65535,
+     32768 = forward +X). Sending 0 rad into the field made `to_yaw_rad()` return
+     `-PI`, so the player spawned facing **180° backwards**, into the wall behind
+     spawn. Fix: `angles.set_view_rad(yaw, 0.0)`.
+  2. `slide_move` rejected a step-up by comparing **vertical** change
+     (`origin[2] <= start_o[2]+0.01`). A step over a *same-height* thin lip (or
+     ledge corner at foot level) advances X without changing Z, so it was
+     discarded and the player stuck with the blocked slide. Q3 compares
+     **horizontal** distance (`down_dist` vs `up_dist`). Fixed to match.
+
 ### Ledge/gap traversal (getting "stuck on the edge")
 - On slick maps (e.g. rek-dire) sliding over a small gap, the player would catch
   the far ledge's leading edge instead of arcing over it. Two Q3-divergent
