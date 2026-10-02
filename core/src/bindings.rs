@@ -152,6 +152,18 @@ pub fn bsp_shader_count(id: usize) -> usize {
     MAPS.with(|m| m.borrow().get(id).map(|b| b.shaders.len()).unwrap_or(0))
 }
 
+/// Number of jumppad (`trigger_push`) volumes parsed from the map.
+#[wasm_bindgen]
+pub fn bsp_jumppad_count(id: usize) -> usize {
+    MAPS.with(|m| m.borrow().get(id).map(|b| b.jumppads.len()).unwrap_or(0))
+}
+
+/// Number of teleporter (`trigger_teleport`) volumes parsed from the map.
+#[wasm_bindgen]
+pub fn bsp_teleporter_count(id: usize) -> usize {
+    MAPS.with(|m| m.borrow().get(id).map(|b| b.teleporters.len()).unwrap_or(0))
+}
+
 /// Completely drop all loaded maps and reset the thread-local store.
 #[wasm_bindgen]
 pub fn bsp_release_all() {

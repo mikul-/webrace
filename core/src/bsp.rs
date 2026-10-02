@@ -97,6 +97,9 @@ pub struct Bsp {
     pub jumppads: Vec<Jumppad>,
     /// Teleporter trigger volumes (`trigger_teleport`).
     pub teleporters: Vec<Teleporter>,
+    /// Plane ids of trigger brushes (shared backing store for `Jumppad`/
+    /// `Teleporter` plane runs).
+    pub trigger_plane_ids: Vec<u32>,
     /// Individual lightmap images (each LIGHTMAP_W×LIGHTMAP_H×3 bytes).
     pub lightmaps: Vec<Vec<u8>>,
     /// Packed lightmap atlas (RGB), and its width/height in pixels.
@@ -137,10 +140,16 @@ pub struct RaceGate {
 
 /// A jumppad (`trigger_push`): a trigger volume that launches the player along
 /// the precomputed ballistic velocity `velocity` (reaching the target origin).
+///
+/// The volume is described by its actual brush (`plane range` into the shared
+/// `planes` array) rather than just an AABB, so diagonal/slanted pads trigger
+/// correctly. `mins`/`maxs` are the brush AABB for fast rejection.
 #[derive(Clone, Copy, Debug)]
 pub struct Jumppad {
     pub mins: [f32; 3],
     pub maxs: [f32; 3],
+    pub plane_off: u32,
+    pub plane_count: u32,
     /// The velocity to set on the player (origin2 in Q3 terms).
     pub velocity: [f32; 3],
 }
@@ -151,6 +160,8 @@ pub struct Jumppad {
 pub struct Teleporter {
     pub mins: [f32; 3],
     pub maxs: [f32; 3],
+    pub plane_off: u32,
+    pub plane_count: u32,
     pub dest_origin: [f32; 3],
 }
 
@@ -189,8 +200,9 @@ impl Bsp {
         let spawns = parse_spawns(data, &lumps[LUMP_ENTITIES]);
         let models = parse_models(data, &lumps[LUMP_MODELS]);
         let race_gates = parse_race(data, &lumps[LUMP_ENTITIES], &models);
-        let (jumppads, teleporters) =
-            parse_triggers(data, &lumps[LUMP_ENTITIES], &parse_submodels(data, &lumps[LUMP_MODELS]));
+        let submodels = parse_submodels(data, &lumps[LUMP_MODELS]);
+        let (jumppads, teleporters, trigger_plane_ids) =
+            parse_triggers(data, &lumps, &lumps[LUMP_ENTITIES], &submodels);
         let (lightmap_atlas, atlas_w, atlas_h) = build_lightmap_atlas(&lightmaps);
 
         Ok(Bsp {
@@ -211,6 +223,7 @@ impl Bsp {
             race_gates,
             jumppads,
             teleporters,
+            trigger_plane_ids,
             lightmaps,
             lightmap_atlas,
             lightmap_atlas_w: atlas_w,
@@ -639,6 +652,32 @@ fn parse_submodels(data: &[u8], lump: &(u32, u32)) -> Vec<(u32, u32, [f32; 3], [
     out
 }
 
+/// Extract the plane indices of a brush (given its firstbrush) from the
+/// BRUSHES/BRUSHSIDES lumps, appending them to `out` and returning the
+/// `(offset, count)` into `out`.
+fn brush_planes_into(
+    data: &[u8],
+    lumps: &[(u32, u32)],
+    firstbrush: u32,
+    numbrushes: u32,
+    out: &mut Vec<u32>,
+) -> (u32, u32) {
+    let (boff, _blen) = lumps[LUMP_BRUSHES];
+    let (soff, _slen) = lumps[LUMP_BRUSHSIDES];
+    let offset = out.len() as u32;
+    for bi in 0..numbrushes {
+        let b = boff as usize + (firstbrush as usize + bi as usize) * DBRUSH_SIZE;
+        let bsoff = read_i32(data, b) as u32;
+        let bsnum = read_i32(data, b + 4) as u32;
+        for s in 0..bsnum {
+            let sp = soff as usize + (bsoff as usize + s as usize) * DBRUSHSIDE_SIZE;
+            let planenum = read_i32(data, sp) as u32;
+            out.push(planenum);
+        }
+    }
+    (offset, out.len() as u32 - offset)
+}
+
 /// Parse player spawn points from the entity lump (text key/value blocks).
 fn parse_spawns(data: &[u8], lump: &(u32, u32)) -> Vec<SpawnPoint> {
     let (off, len) = *lump;
@@ -832,15 +871,16 @@ fn parse_race(
 
 /// Parse jumppads (`trigger_push`) and teleporters (`trigger_teleport`) from
 /// the entity lump. Trigger volumes reference a submodel (`model "*N"`) whose
-/// AABB bounds the trigger; each also references a target entity that supplies
-/// either the launch destination (`target_position`/`info_notnull`) or the
-/// teleport destination (`misc_teleporter_dest`/`target_teleporter`).
+/// brush geometry bounds the trigger; each also references a target entity that
+/// supplies either the launch destination (`target_position`/`info_notnull`) or
+/// the teleport destination (`misc_teleporter_dest`/`target_teleporter`).
 fn parse_triggers(
     data: &[u8],
-    lump: &(u32, u32),
+    lumps: &[(u32, u32)],
+    entity_lump: &(u32, u32),
     submodels: &[(u32, u32, [f32; 3], [f32; 3])],
-) -> (Vec<Jumppad>, Vec<Teleporter>) {
-    let (off, len) = *lump;
+) -> (Vec<Jumppad>, Vec<Teleporter>, Vec<u32>) {
+    let (off, len) = *entity_lump;
     let text = String::from_utf8_lossy(&data[off as usize..(off + len) as usize]);
 
     // First pass: collect target origins (targetname -> origin).
@@ -872,6 +912,7 @@ fn parse_triggers(
 
     let mut jumppads = Vec::new();
     let mut teleporters = Vec::new();
+    let mut trigger_plane_ids: Vec<u32> = Vec::new();
 
     for block in text.split('{').skip(1) {
         let Some(end) = block.find('}') else { continue };
@@ -886,9 +927,12 @@ fn parse_triggers(
             continue;
         };
         // submodels is indexed from model 1.
-        let Some((_, _, mins, maxs)) = submodels.get(num.wrapping_sub(1)) else {
+        let Some((firstbrush, numbrushes, mins, maxs)) = submodels.get(num.wrapping_sub(1)).copied()
+        else {
             continue;
         };
+        let (plane_off, plane_count) =
+            brush_planes_into(data, lumps, firstbrush, numbrushes, &mut trigger_plane_ids);
 
         match classname {
             "trigger_push" => {
@@ -910,15 +954,23 @@ fn parse_triggers(
                         vel[0] = if dist > 0.0 { vel[0] / dist * nspeed } else { 0.0 };
                         vel[1] = if dist > 0.0 { vel[1] / dist * nspeed } else { 0.0 };
                         vel[2] = time * gravity;
-                        jumppads.push(Jumppad { mins: *mins, maxs: *maxs, velocity: vel });
+                        jumppads.push(Jumppad {
+                            mins,
+                            maxs,
+                            plane_off,
+                            plane_count,
+                            velocity: vel,
+                        });
                     }
                 }
             }
             "trigger_teleport" => {
                 if let Some(dest) = target_origins.get(target) {
                     teleporters.push(Teleporter {
-                        mins: *mins,
-                        maxs: *maxs,
+                        mins,
+                        maxs,
+                        plane_off,
+                        plane_count,
                         dest_origin: *dest,
                     });
                 }
@@ -927,7 +979,7 @@ fn parse_triggers(
         }
     }
 
-    (jumppads, teleporters)
+    (jumppads, teleporters, trigger_plane_ids)
 }
 
 /// Get an entity key's string value (empty if absent).

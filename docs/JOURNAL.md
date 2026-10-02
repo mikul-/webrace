@@ -90,6 +90,21 @@ reconstruct context without re-deriving it.
   arrays — keep the length in sync with `brush_plane_count` or collision silently
   drops brushes (a one-element-too-short `brush_contents` cost a wall-dash test).
 
+### Jumppad/teleporter trigger geometry fix
+- Trigger volumes were first detected by their **submodel AABB**, which is wrong
+  for **diagonal/slanted** jumppads (a "ramp" pad): the AABB is the bounding box
+  of a wedge, so the player standing at the bottom of the ramp is outside the
+  AABB and never triggers, while the top of the ramp over-triggers.
+- Fix: `parse_triggers` now extracts each trigger submodel's **actual brush
+  planes** (via `brush_planes_into`, reading BRUSHES/BRUSHSIDES/PLANES) into a
+  shared `trigger_plane_ids`, and `jumppad_at`/`teleporter_at` test the player
+  AABB against the convex brush using the same slab method as `trace`
+  (`box_intersects_brush`). Handles axis-aligned and diagonal pads alike.
+- Gotcha: `drop_to_ground` on a *diagonal ramp pad* slides the player down the
+  ramp (off the trigger) — that's correct collision; such pads are meant to be
+  run *up*, not landed on from above. Flat pads (pornstar, coldrun sjp1/sjp2)
+  trigger on contact.
+
 ### Scaffold & BSP (start)
 - Started with Vite+TS + Rust→WASM, validated the BSP parser against **real Warfork
   maps** (extracted `.bsp` from local `~/.local/share/warfork-2.1/**/*.pk3`).

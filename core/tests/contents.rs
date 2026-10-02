@@ -27,6 +27,7 @@ fn solid_world() -> World {
         brush_contents: vec![CONTENTS_SOLID],
         jumppads: vec![],
         teleporters: vec![],
+        trigger_plane_ids: vec![],
         planes,
     }
 }
@@ -59,6 +60,7 @@ fn water_world() -> World {
         brush_contents: vec![CONTENTS_SOLID, CONTENTS_WATER],
         jumppads: vec![],
         teleporters: vec![],
+        trigger_plane_ids: vec![],
         planes,
     }
 }
@@ -87,13 +89,35 @@ fn water_volume_is_detected_and_slows_fall() {
     assert!(ps.velocity[2] > -200.0, "water should slow the sink, vz={}", ps.velocity[2]);
 }
 
+/// Append the 6 planes of an axis-aligned box to the world's plane + trigger
+/// plane-id arrays, returning the `(plane_off, plane_count)` trigger run.
+fn add_box_trigger(world: &mut World, mins: [f32; 3], maxs: [f32; 3]) -> (u32, u32) {
+    // Box planes (inside = negative side).
+    let planes = [
+        Plane { normal: [1.0, 0.0, 0.0], dist: maxs[0] },   // x < maxs
+        Plane { normal: [-1.0, 0.0, 0.0], dist: -mins[0] }, // x > mins
+        Plane { normal: [0.0, 1.0, 0.0], dist: maxs[1] },
+        Plane { normal: [0.0, -1.0, 0.0], dist: -mins[1] },
+        Plane { normal: [0.0, 0.0, 1.0], dist: maxs[2] },
+        Plane { normal: [0.0, 0.0, -1.0], dist: -mins[2] },
+    ];
+    let off = world.trigger_plane_ids.len() as u32;
+    for p in planes {
+        world.planes.push(p);
+        world.trigger_plane_ids.push(world.planes.len() as u32 - 1);
+    }
+    (off, 6)
+}
+
 #[test]
 fn jumppad_launches_player() {
     let mut pmove = Pmove::new(solid_world(), 1.0 / 250.0);
-    // Attach a jumppad over the origin.
+    let (off, count) = add_box_trigger(&mut pmove.world, [-32.0, -32.0, -100.0], [32.0, 32.0, 100.0]);
     pmove.world.jumppads.push(Jumppad {
         mins: [-32.0, -32.0, -100.0],
         maxs: [32.0, 32.0, 100.0],
+        plane_off: off,
+        plane_count: count,
         velocity: [0.0, 0.0, 600.0],
     });
     let mut ps = PlayerState::default();
@@ -111,9 +135,12 @@ fn jumppad_launches_player() {
 #[test]
 fn teleporter_moves_player_to_destination() {
     let mut pmove = Pmove::new(solid_world(), 1.0 / 250.0);
+    let (off, count) = add_box_trigger(&mut pmove.world, [-32.0, -32.0, -100.0], [32.0, 32.0, 100.0]);
     pmove.world.teleporters.push(Teleporter {
         mins: [-32.0, -32.0, -100.0],
         maxs: [32.0, 32.0, 100.0],
+        plane_off: off,
+        plane_count: count,
         dest_origin: [1000.0, 500.0, -100.0],
     });
     let mut ps = PlayerState::default();

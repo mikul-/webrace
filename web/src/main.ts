@@ -194,7 +194,10 @@ async function loadMap(explicitName?: string) {
 
     overlay.classList.add("hidden");
     setStatus("");
-    log(`${name}: ${triCount} tris, ${brushCount} brushes`);
+    log(
+      `${name}: ${triCount} tris, ${brushCount} brushes, ` +
+        `${core.bsp_jumppad_count(mapId)} jumppads, ${core.bsp_teleporter_count(mapId)} teleporters`,
+    );
     log("CLICK the screen to lock mouse · WASD move · SPACE dash · right-click jump");
 
     const eye = core.session_eye(sessionId) as unknown as Float32Array;

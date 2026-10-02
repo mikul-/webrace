@@ -46,6 +46,8 @@ pub struct World {
     pub jumppads: Vec<Jumppad>,
     /// Teleporter trigger volumes.
     pub teleporters: Vec<Teleporter>,
+    /// Plane ids of trigger brushes (backing store for trigger plane runs).
+    pub trigger_plane_ids: Vec<u32>,
 }
 
 impl World {
@@ -61,6 +63,7 @@ impl World {
             shader_contents: bsp.shader_contents.clone(),
             jumppads: bsp.jumppads.clone(),
             teleporters: bsp.teleporters.clone(),
+            trigger_plane_ids: bsp.trigger_plane_ids.clone(),
         }
     }
 }
@@ -294,30 +297,60 @@ impl World {
         result
     }
 
-    /// First jumppad whose AABB contains the player (origin + mins/maxs).
+    /// First jumppad whose trigger brush overlaps the player's AABB. Uses the
+    /// brush's actual convex planes (not just its AABB) so diagonal/slanted
+    /// pads trigger correctly.
     pub fn jumppad_at(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> Option<&Jumppad> {
         self.jumppads.iter().find(|jp| {
-            aabb_overlap(
-                origin,
-                mins,
-                maxs,
-                jp.mins,
-                jp.maxs,
-            )
+            aabb_overlap(origin, mins, maxs, jp.mins, jp.maxs)
+                && self.box_intersects_brush(origin, mins, maxs, jp.plane_off, jp.plane_count)
         })
     }
 
-    /// First teleporter whose AABB contains the player.
+    /// First teleporter whose trigger brush overlaps the player.
     pub fn teleporter_at(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> Option<&Teleporter> {
         self.teleporters.iter().find(|tp| {
-            aabb_overlap(
-                origin,
-                mins,
-                maxs,
-                tp.mins,
-                tp.maxs,
-            )
+            aabb_overlap(origin, mins, maxs, tp.mins, tp.maxs)
+                && self.box_intersects_brush(origin, mins, maxs, tp.plane_off, tp.plane_count)
         })
+    }
+
+    /// Does the player's AABB intersect the convex brush defined by the given
+    /// plane run? Uses the same slab method as `trace`: the box is inside iff
+    /// every plane's (box-extent-expanded) distance can bound the interval.
+    fn box_intersects_brush(
+        &self,
+        origin: [f32; 3],
+        mins: [f32; 3],
+        maxs: [f32; 3],
+        plane_off: u32,
+        plane_count: u32,
+    ) -> bool {
+        let center = [
+            origin[0] + (mins[0] + maxs[0]) * 0.5,
+            origin[1] + (mins[1] + maxs[1]) * 0.5,
+            origin[2] + (mins[2] + maxs[2]) * 0.5,
+        ];
+        let half = [
+            (maxs[0] - mins[0]) * 0.5,
+            (maxs[1] - mins[1]) * 0.5,
+            (maxs[2] - mins[2]) * 0.5,
+        ];
+        for p in 0..plane_count as usize {
+            let pid = self.trigger_plane_ids[plane_off as usize + p] as usize;
+            let Some(plane) = self.planes.get(pid) else {
+                return false;
+            };
+            let n = plane.normal;
+            let radius = half[0] * n[0].abs() + half[1] * n[1].abs() + half[2] * n[2].abs();
+            let dist = center[0] * n[0] + center[1] * n[1] + center[2] * n[2] - plane.dist;
+            // The box is entirely OUTSIDE if it's on the positive side of any
+            // plane beyond its radius.
+            if dist > radius {
+                return false;
+            }
+        }
+        true
     }
 }
 

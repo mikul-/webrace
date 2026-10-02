@@ -23,6 +23,7 @@ fn slick_world() -> World {
         brush_contents: vec![webrace_core::bsp::CONTENTS_SOLID],
         jumppads: vec![],
         teleporters: vec![],
+        trigger_plane_ids: vec![],
         planes,
     }
 }
