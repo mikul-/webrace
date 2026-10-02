@@ -383,7 +383,13 @@ impl Pmove {
                     + ps.velocity[1] * ps.velocity[1]
                     + ps.velocity[2] * ps.velocity[2])
                     .sqrt();
-                if clipped > 0.0 {
+                // If the clip degenerated the velocity to ~zero (e.g. a pure
+                // down-into-ground move that the clip turned into a tiny up
+                // nudge), stop dead instead of re-scaling the epsilon into a
+                // full-speed bounce.
+                if clipped < 0.1 {
+                    ps.velocity[2] = 0.0;
+                } else {
                     let s = speed / clipped;
                     ps.velocity[0] *= s;
                     ps.velocity[1] *= s;
