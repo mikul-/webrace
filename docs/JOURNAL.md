@@ -90,17 +90,22 @@ reconstruct context without re-deriving it.
   arrays — keep the length in sync with `brush_plane_count` or collision silently
   drops brushes (a one-element-too-short `brush_contents` cost a wall-dash test).
 
-### Forward-jump speed bug (aircontrol)
-- Holding W + jumping added a spurious ~320 ups on the first airborne tick (the
-  player's speed jumped to ~640 then slowly climbed). Root cause: `aircontrol`
-  ported Warfork's `VectorNormalize`-in-place semantics wrong — the C code
-  normalizes `velocity` first (so `velocity[i]` becomes a *unit* direction) and
-  then does `unit[i] * speed + wishdir[i]*k`, but the Rust port did
-  `velocity[i] * speed` with the *unnormalized* velocity (~320), producing
-  `320*320`, which then re-normalized back to an instant ~320 boost.
-- Fix: normalize the horizontal velocity into a unit `(vx, vy)` first, then use
-  `unit * speed` in the control step. Regression test `forward_jump.rs` locks it
-  in (pre-jump 320 → first-airborne 329.6, a gentle ramp).
+### Forward-jump speed bug
+- Two related issues made a plain forward jump ramp from 320 to ~640 ups where
+  Warfork lands ~350:
+  1. `aircontrol` ported C `VectorNormalize` (which normalizes *in place* and
+     returns the length) wrong: it multiplied the *full* velocity by `speed`
+     (`320*320`) instead of a unit direction — instant ~320 boost on the first
+     airborne tick.
+  2. The bigger one: `max_player_speed` was set to **600**, but Warfork's
+     `maxPlayerSpeed` is **320** (`DEFAULT_PLAYERSPEED` = 320 for race/instagib/
+     standard — there is no separate 600 "air-bunny" reference speed). The
+     forward-bunny `PM_AirAccelerate` uses `curspeed.max(maxPlayerSpeed)` as its
+     target, so with 600 it ramps every forward jump toward 600+.
+- Fix: normalize before `aircontrol`, and set `max_player_speed = 320.0`.
+  Result: forward jump lands at ~354 (320 → +34 over one arc), matching Warfork.
+  Strafe-jump still climbs past 320 via the air-accel sweet spot.
+- Regression test `forward_jump.rs` asserts a forward jump lands < 400 ups.
 
 ### Jumppad/teleporter trigger geometry fix
 - Trigger volumes were first detected by their **submodel AABB**, which is wrong

@@ -88,14 +88,17 @@ pub struct Pmove {
 
 impl Pmove {
     pub fn new(world: World, frametime: f32) -> Self {
-        // `max_speed` is the player run speed used by PM_CmdScale (the entity
-        // "speed" field, 320 ups — Quake/Warsow standard). `max_player_speed`
-        // is the air-bunny reference speed (Warfork's `maxPlayerSpeed`).
+        // `max_speed` and `max_player_speed` are both the ground run speed
+        // (Warfork `DEFAULT_PLAYERSPEED` = 320 ups, shared by race/instagib/
+        // standard). Warfork has a single `maxPlayerSpeed` that grounds both
+        // the ground speed cap and the forward-bunny reference speed — there is
+        // no separate higher "air-bunny" reference (that was a mis-port that
+        // made a forward jump ramp to ~600 instead of ~350).
         Pmove {
             world,
             frametime,
             max_speed: 320.0,
-            max_player_speed: 600.0,
+            max_player_speed: 320.0,
             mins: crate::trace::PLAYER_MINS,
             maxs: crate::trace::PLAYER_MAXS,
         }
