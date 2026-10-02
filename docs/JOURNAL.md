@@ -148,10 +148,27 @@ reconstruct context without re-deriving it.
      discarded and the player stuck with the blocked slide. Q3 compares
      **horizontal** distance (`down_dist` vs `up_dist`). Fixed to match.
 
+### Faithful Warfork `PM_SlideMove` + `PM_StepSlideMove` port (ramp slide)
+- Replaced our Q3-hybrid slide/step with a **faithful port of Warfork**:
+  - `slide_clip` = `PM_SlideMove` (no ground-plane pre-seed; zeroes downward
+    velocity only when the ground normal is exactly flat; `PM_OVERBOUNCE` 1.01;
+    repeated-plane nudge; crease slide; restore-last-valid-origin on trapped).
+  - `slide_move` = `PM_StepSlideMove` (plain slide, retry from `STEPSIZE` up,
+    keep the move that advanced farther horizontally, then on a walkable ramp
+    preserve horizontal speed and set `velocity[2] = down_v[2]` — the "ramp
+    sliding" line).
+- **Gravity is now air-only** (Warfork: zero upward velocity on ground, no
+  downward gravity). The previous gravity-on-slick hack is gone.
+- `grounded()` now uses Warfork `ISWALKABLEPLANE` (`normal.z >= 0.7`) for **all**
+  surfaces. This is the key to slick ramps: a *steep* slick ramp is **not**
+  walkable, so the player is airborne and gravity accelerates them down (our old
+  slick special-case of `0.2` wrongly kept them grounded, so nothing pushed
+  them). A *gentle* slick ramp is walkable; a stationary player does not slide
+  (Warfork has no ground gravity) — the ramp only redirects existing momentum.
+
 ### Gravity-on-ground + residual drift (the "14 ups after stopping" bug)
-- Warfork applies gravity in the **air** and on **slick** ground (to slide down
-  ramps), but NOT on normal ground — the ground clip holds the player and
-  redirects horizontal motion. Our code applied gravity *always*, then clipped +
+- Warfork applies gravity in the **air**; NOT on the ground (it zeroes upward
+  velocity only). Our code applied gravity *always*, then clipped +
   re-normalized the full 3D speed. That leaked the gravity's ~3.4 ups downward
   component back into horizontal speed, so after releasing the key the player
   asymptoted to a ~14-up drift instead of stopping.
