@@ -28,6 +28,10 @@ fn wall_world() -> World {
         brush_plane_ids: (0..12).collect(),
         brush_shaders: vec![0, 0],
         shader_flags: vec![0],
+        shader_contents: vec![0],
+        brush_contents: vec![webrace_core::bsp::CONTENTS_SOLID; 2],
+        jumppads: vec![],
+        teleporters: vec![],
         planes,
     }
 }

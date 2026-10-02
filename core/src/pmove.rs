@@ -39,6 +39,10 @@ pub struct PlayerState {
     pub ground_flags: i32,
     /// Normal of the ground plane currently stood on (for slope sliding).
     pub ground_normal: [f32; 3],
+    /// Water submersion level (0 none, 1 feet, 2 waist, 3 head).
+    pub waterlevel: i32,
+    /// Contents of the liquid the player is in (CONTENTS_WATER/LAVA/SLIME).
+    pub watertype: i32,
     // Velocity magnitude last tick (for overbounce / speed display).
     pub speed: f32,
 }
@@ -58,6 +62,8 @@ impl Default for PlayerState {
             crouched: false,
             ground_flags: 0,
             ground_normal: [0.0, 0.0, 1.0],
+            waterlevel: 0,
+            watertype: 0,
             speed: 0.0,
         }
     }
@@ -65,6 +71,10 @@ impl Default for PlayerState {
 
 /// Surface flags (mirrors QFusion qfiles.h).
 pub const SURF_SLICK: i32 = 0x2;
+
+/// Water movement constants (Warfork `gs_pmove.c`).
+pub const PM_WATERACCELERATE: f32 = 10.0;
+pub const PM_WATERFRICTION: f32 = 1.0;
 
 pub struct Pmove {
     pub world: World,
@@ -171,6 +181,96 @@ impl Pmove {
         false
     }
 
+    /// Detect the player's submersion level (0..3) and liquid type, sampling
+    /// point-contents at three heights (feet+1, waist, head). Mirrors Q3
+    /// `PM_WaterMove` entry / `Pmove_WaterLevel`.
+    fn update_water(&mut self, ps: &mut PlayerState) {
+        ps.waterlevel = 0;
+        ps.watertype = 0;
+
+        let view_height = if ps.crouched { 18.0 } else { 26.0 };
+        // Relative sample heights above the box origin (feet at origin[2]-24).
+        let feet = ps.origin[2] - 24.0 + 1.0;
+        let mid = ps.origin[2] - 24.0 + view_height * 0.5;
+        let head = ps.origin[2] - 24.0 + view_height;
+
+        let c = |z: f32| self.world.point_contents([ps.origin[0], ps.origin[1], z]);
+        const MASK_WATER: i32 = crate::bsp::CONTENTS_WATER
+            | crate::bsp::CONTENTS_LAVA
+            | crate::bsp::CONTENTS_SLIME;
+
+        let feet_c = c(feet);
+        if feet_c & MASK_WATER != 0 {
+            ps.watertype = feet_c & MASK_WATER;
+            ps.waterlevel = 1;
+            let mid_c = c(mid);
+            if mid_c & MASK_WATER != 0 {
+                ps.waterlevel = 2;
+                let head_c = c(head);
+                if head_c & MASK_WATER != 0 {
+                    ps.waterlevel = 3;
+                }
+            }
+        }
+    }
+
+    /// Q3 `PM_WaterMove`: swimming. Build a wish direction from the view-space
+    /// movement keys plus vertical input (drift down when idle), clamp, and
+    /// accelerate with `pm_wateraccelerate`.
+    fn water_move(
+        &mut self,
+        ps: &mut PlayerState,
+        forward: [f32; 3],
+        right: [f32; 3],
+        fwd_push: f32,
+        side_push: f32,
+        up_push: f32,
+    ) {
+        let mut wishvel = [
+            forward[0] * fwd_push + right[0] * side_push,
+            forward[1] * fwd_push + right[1] * side_push,
+            forward[2] * fwd_push + right[2] * side_push,
+        ];
+
+        if fwd_push == 0.0 && side_push == 0.0 && up_push == 0.0 {
+            wishvel[2] -= 60.0; // drift toward the bottom
+        } else {
+            wishvel[2] += up_push;
+        }
+
+        let mut wishdir = wishvel;
+        let mut wishspeed = (wishdir[0] * wishdir[0] + wishdir[1] * wishdir[1] + wishdir[2] * wishdir[2]).sqrt();
+        if wishspeed > 1e-6 {
+            wishdir[0] /= wishspeed;
+            wishdir[1] /= wishspeed;
+            wishdir[2] /= wishspeed;
+        }
+        // Clamp to max swim speed (Q3 scales wishspeed to max_speed).
+        if wishspeed > self.max_speed {
+            wishspeed = self.max_speed;
+        }
+        wishspeed *= 0.5;
+
+        self.accelerate(ps, wishdir, wishspeed, PM_WATERACCELERATE);
+    }
+
+    /// Q3 water drag: `drop += speed * pm_waterfriction * waterlevel * frametime`.
+    fn water_friction(&mut self, ps: &mut PlayerState) {
+        let speed = (ps.velocity[0] * ps.velocity[0]
+            + ps.velocity[1] * ps.velocity[1]
+            + ps.velocity[2] * ps.velocity[2])
+            .sqrt();
+        if speed < 1.0 {
+            ps.velocity = [0.0, 0.0, 0.0];
+            return;
+        }
+        let drop = speed * PM_WATERFRICTION * ps.waterlevel as f32 * self.frametime;
+        let newspeed = (speed - drop).max(0.0) / speed.max(0.0001);
+        ps.velocity[0] *= newspeed;
+        ps.velocity[1] *= newspeed;
+        ps.velocity[2] *= newspeed;
+    }
+
     /// Advance one tick.
     pub fn step(&mut self, ps: &mut PlayerState, cmd: &Cmd) {
         let special = cmd.buttons & crate::input::BUTTON_SPECIAL != 0;
@@ -205,6 +305,25 @@ impl Pmove {
         let fwd_push = cmd.forward as f32;
         let side_push = cmd.right as f32;
         let up_push = cmd.up as f32;
+
+        // Detect submersion (waterlevel 0..3) at three sample heights, like
+        // Q3 `PM_WaterMove` entry. Sample at feet+1, +half, +full view height.
+        self.update_water(ps);
+
+        if ps.waterlevel >= 2 {
+            // Swimming: water move replaces ground/air movement; jump does not
+            // fire (Q3 `PM_CheckJump` returns when waterlevel >= 2).
+            self.water_move(ps, forward, right, fwd_push, side_push, up_push);
+            // Apply water friction + integrate.
+            self.water_friction(ps);
+            self.slide_move(ps);
+            ps.speed = (ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]).sqrt();
+            self.update_ground(ps);
+            self.check_triggers(ps);
+            // Keep the player out of the ceiling while swimming.
+            let _ = up;
+            return;
+        }
 
         // Jump — continuous (autohop): while held and grounded, keep hopping.
         if jump && ps.on_ground {
@@ -254,6 +373,9 @@ impl Pmove {
 
         // Recompute ground contact.
         self.update_ground(ps);
+
+        // Triggers: teleporters move the player; jumppads launch them.
+        self.check_triggers(ps);
 
         // Anti-float: if grounded, keep the feet pinned to the ground plane so
         // the slide/epsilon at angled seams cannot drift the player upward.
@@ -879,6 +1001,28 @@ impl Pmove {
 
     fn update_ground(&mut self, ps: &mut PlayerState) {
         ps.on_ground = self.grounded(ps);
+    }
+
+    /// Trigger overlap handling: teleporters move the player (preserving
+    /// velocity + horizontal yaw), jumppads replace velocity with a launch.
+    fn check_triggers(&mut self, ps: &mut PlayerState) {
+        let mins = self.mins;
+        let maxs = self.maxs;
+        let origin = ps.origin;
+
+        if let Some(tp) = self.world.teleporter_at(origin, mins, maxs) {
+            let dest = tp.dest_origin;
+            ps.origin = dest;
+            self.drop_to_ground(ps);
+            return;
+        }
+
+        if let Some(jp) = self.world.jumppad_at(origin, mins, maxs) {
+            ps.velocity = jp.velocity;
+            ps.on_ground = false;
+            ps.wjtime = 0;
+            ps.doshtime = 0;
+        }
     }
 }
 

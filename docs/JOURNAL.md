@@ -15,6 +15,14 @@ reconstruct context without re-deriving it.
   sticking.
 - **BSP loading**: native QFusion/Quake3 `IBSP` v46 — geometry, textures, lightmaps,
   collision brushes, spawn points, and **race gates** (start/checkpoint/finish).
+- **Bezier patches** (`FACETYPE_PATCH`) — control-point grids tessellated into
+  8×8 triangle meshes via Bernstein blending (position + tex + lightmap + normal +
+  color), fixing the curved geometry (arches/pipes/pillars) that planar-only parsing
+  skipped.
+- **Physical contents** (LUMP_SHADERREFS `contents`): water/lava/slime swimming
+  (Q3 `PM_WaterMove` + waterlevel 0–3 detection via point-contents), jumppads
+  (`trigger_push` ballistic launch), teleporters (`trigger_teleport` → target
+  origin). Non-solid liquid brushes are skipped for collision.
 - **Rendering**: raw WebGL2, per-shader draw chunks, texture + lightmap sampling,
   TGA decoder for `.tga` textures.
 - **Race mode**: timer, checkpoints/splits, position-save (Mouse 3, behind start
@@ -31,13 +39,8 @@ reconstruct context without re-deriving it.
 - **Live deployment** on TrueNAS (see `docs/deploy.md`).
 
 ### Stubbed / not yet built
-- **Bezier patches (`FACETYPE_PATCH`)** — *skipped* in the BSP parser. This is the
-  #1 cause of "missing geometry/textures" on curved maps (arches, pipes, pillars).
-  Needs tessellation (control points -> triangles).
 - **Shaders** (`.shader` scripts) — not parsed at all. No animated textures, emissive
   glows, multi-stage materials, or skybox.
-- **Water/lava/slime/jumppad/teleporter contents** — per-shader `contents` flags
-  are ignored (only `SURF_SLICK` is used).
 - **Lightgrid** (`LUMP_LIGHTGRID`) — only static vertex color; no dynamic lightgrid
   sampling for entities.
 - **Visibility** (PVS/`LUMP_VISIBILITY`) — everything rendered every frame.
@@ -47,9 +50,9 @@ reconstruct context without re-deriving it.
   (noclip, position-save-anywhere).
 
 ## Ordered TODO (recommended next steps)
-1. **Bezier patch tessellation** — fixes visible holes/curved-geometry gaps.
+1. ~~Bezier patch tessellation~~ (done — see below).
 2. Shader parsing (sky + animated/emissive textures).
-3. Physical `contents` (water/lava/jumppad/teleporter).
+3. ~~Physical `contents` (water/lava/jumppad/teleporter)~~ (done — see below).
 4. Ghosts/replays (deterministic sim makes this nearly free).
 5. Weapons.
 6. Lightgrid + PVS (perf).
@@ -57,6 +60,35 @@ reconstruct context without re-deriving it.
 ---
 
 ## History / decisions / gotchas
+
+### Bezier patch tessellation
+- `FACETYPE_PATCH` faces carry a control-point grid (dimensions in the last two
+  `dface_t` fields `patch_cp[2]` at byte offsets 96/100); `numverts == cp_w*cp_h`
+  and the points live at `firstvert..firstvert+numverts` as ordinary `dvertex_t`s.
+- Tessellation uses bilinear Bernstein blending of ALL attributes (position, tex,
+  lightmap, normal, color), subdivided 8×8 by default. The blended normal is
+  re-normalized (blending shrinks it). Emitted into the same shader-grouped
+  triangle soup, so patches draw as one chunk like planar faces.
+- Patch triangulation winds `[i0,i1,i2, i1,i3,i2]` per cell (i0=top-left in a
+  (px,py) grid) to match the planar face winding (culling is currently off).
+
+### Physical contents (LUMP_SHADERREFS + entity triggers)
+- `dshaderref_t` is `name[64] + flags(i32) + contents(i32)` (72 bytes); the
+  `contents` word at offset 68 was previously unread. It's what classifies
+  water/lava/slime (and `CONTENTS_JUMPPAD`-style surfaces).
+- **Two data sources** feed trigger semantics, not one: (1) per-shader `contents`
+  for liquid volumes, and (2) entity blocks `trigger_push`/`trigger_teleport`/
+  `trigger_hurt` that reference a submodel (`model "*N"`) whose AABB bounds the
+  trigger, plus a `target` entity (`target_position`/`info_notnull`/`misc_teleporter_dest`).
+- **World-brush contents decode** (verified on real maps): solid = `1`
+  (CONTENTS_SOLID), playerclip = `0x20010000` (PLAYERCLIP|TRANSLUCENT), liquid-
+  surface brushes = `0x20000000` (TRANSLUCENT only, non-solid). So
+  `is_solid_contents = contents & (SOLID|PLAYERCLIP) != 0 && contents & MASK_WATER == 0`.
+- **Jumppad velocity** is precomputed from the target apex by `trigger_push_setup`:
+  `time = sqrt(height/(0.5*g))`, horizontal speed = `dist/time`, `vz = time*g`.
+- Tests: the `World` literal now carries `brush_contents` parallel to the brush
+  arrays — keep the length in sync with `brush_plane_count` or collision silently
+  drops brushes (a one-element-too-short `brush_contents` cost a wall-dash test).
 
 ### Scaffold & BSP (start)
 - Started with Vite+TS + Rust→WASM, validated the BSP parser against **real Warfork

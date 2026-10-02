@@ -26,6 +26,10 @@ fn flat_world() -> World {
         brush_plane_ids,
         brush_shaders: vec![0],
         shader_flags: vec![0],
+        shader_contents: vec![0],
+        brush_contents: vec![webrace_core::bsp::CONTENTS_SOLID],
+        jumppads: vec![],
+        teleporters: vec![],
         planes,
     }
 }

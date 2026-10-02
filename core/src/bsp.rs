@@ -43,6 +43,22 @@ pub const FACETYPE_PLANAR: i32 = 1;
 pub const FACETYPE_PATCH: i32 = 2;
 pub const FACETYPE_TRISURF: i32 = 3;
 
+/// Contents flags (Q3/QFusion `qfiles.h`) carried per-shader by LUMP_SHADERREFS.
+/// Used to classify liquid / jumppad / teleporter surfaces for gameplay.
+pub const CONTENTS_SOLID: i32 = 1;
+pub const CONTENTS_STRUCTURAL: i32 = 0x1000_0000;
+pub const CONTENTS_LAVA: i32 = 8;
+pub const CONTENTS_SLIME: i32 = 16;
+pub const CONTENTS_WATER: i32 = 32;
+pub const CONTENTS_FOG: i32 = 64;
+pub const CONTENTS_PLAYERCLIP: i32 = 0x10000;
+pub const CONTENTS_TELEPORTER: i32 = 0x40000;
+pub const CONTENTS_JUMPPAD: i32 = 0x80000;
+pub const CONTENTS_TRIGGER: i32 = 0x4000_0000;
+
+/// Surface flags (Q3/QFusion `qfiles.h`).
+pub const SURF_NODRAW: i32 = 0x80;
+
 pub const LIGHTMAP_W: usize = 128;
 pub const LIGHTMAP_H: usize = 128;
 pub const LIGHTMAP_BYTES: usize = 3;
@@ -68,10 +84,19 @@ pub struct Bsp {
     pub shaders: Vec<String>,
     /// Surface flags (SURF_SLICK etc.) per shader.
     pub shader_flags: Vec<i32>,
+    /// Contents flags (CONTENTS_WATER etc.) per shader, from LUMP_SHADERREFS.
+    pub shader_contents: Vec<i32>,
+    /// Contents flags per collision brush (parallel to brush arrays), derived
+    /// from the brush's shader. Used for PointContents (water/lava/etc.).
+    pub brush_contents: Vec<i32>,
     pub spawns: Vec<SpawnPoint>,
     /// Race checkpoint triggers (start, checkpoints, finish). Ordered by the
     /// map's intended sequence (start first, then checkpoints, then finish).
     pub race_gates: Vec<RaceGate>,
+    /// Jumppad trigger volumes (`trigger_push`).
+    pub jumppads: Vec<Jumppad>,
+    /// Teleporter trigger volumes (`trigger_teleport`).
+    pub teleporters: Vec<Teleporter>,
     /// Individual lightmap images (each LIGHTMAP_W×LIGHTMAP_H×3 bytes).
     pub lightmaps: Vec<Vec<u8>>,
     /// Packed lightmap atlas (RGB), and its width/height in pixels.
@@ -110,6 +135,25 @@ pub struct RaceGate {
     pub maxs: [f32; 3],
 }
 
+/// A jumppad (`trigger_push`): a trigger volume that launches the player along
+/// the precomputed ballistic velocity `velocity` (reaching the target origin).
+#[derive(Clone, Copy, Debug)]
+pub struct Jumppad {
+    pub mins: [f32; 3],
+    pub maxs: [f32; 3],
+    /// The velocity to set on the player (origin2 in Q3 terms).
+    pub velocity: [f32; 3],
+}
+
+/// A teleporter (`trigger_teleport`): a trigger volume that instantly moves the
+/// player to `dest_origin`, preserving velocity and horizontal view direction.
+#[derive(Clone, Copy, Debug)]
+pub struct Teleporter {
+    pub mins: [f32; 3],
+    pub maxs: [f32; 3],
+    pub dest_origin: [f32; 3],
+}
+
 impl Bsp {
     /// Parse a raw `.bsp` byte buffer (already extracted from any `.pk3`).
     pub fn parse(name: &str, data: &[u8]) -> Result<Bsp, String> {
@@ -135,16 +179,18 @@ impl Bsp {
             base += 8;
         }
 
-        let (shaders, shader_flags) = parse_shaders(data, &lumps[LUMP_SHADERREFS])?;
+        let (shaders, shader_flags, shader_contents) = parse_shaders(data, &lumps[LUMP_SHADERREFS])?;
         let planes = parse_planes(data, &lumps[LUMP_PLANES]);
         let lightmaps = parse_lightmaps(data, &lumps[LUMP_LIGHTING]);
         let (positions, indices, chunks) =
             parse_drawable(data, &lumps, &shaders, &lightmaps)?;
-        let (brush_plane_offsets, brush_plane_count, brush_plane_ids, brush_shaders) =
-            parse_brushes(data, &lumps)?;
+        let (brush_plane_offsets, brush_plane_count, brush_plane_ids, brush_shaders, brush_contents) =
+            parse_brushes(data, &lumps, &shader_contents)?;
         let spawns = parse_spawns(data, &lumps[LUMP_ENTITIES]);
         let models = parse_models(data, &lumps[LUMP_MODELS]);
         let race_gates = parse_race(data, &lumps[LUMP_ENTITIES], &models);
+        let (jumppads, teleporters) =
+            parse_triggers(data, &lumps[LUMP_ENTITIES], &parse_submodels(data, &lumps[LUMP_MODELS]));
         let (lightmap_atlas, atlas_w, atlas_h) = build_lightmap_atlas(&lightmaps);
 
         Ok(Bsp {
@@ -159,8 +205,12 @@ impl Bsp {
             planes,
             shaders,
             shader_flags,
+            shader_contents,
+            brush_contents,
             spawns,
             race_gates,
+            jumppads,
+            teleporters,
             lightmaps,
             lightmap_atlas,
             lightmap_atlas_w: atlas_w,
@@ -174,22 +224,25 @@ impl Bsp {
     }
 }
 
-fn parse_shaders(data: &[u8], lump: &(u32, u32)) -> Result<(Vec<String>, Vec<i32>), String> {
+fn parse_shaders(data: &[u8], lump: &(u32, u32)) -> Result<(Vec<String>, Vec<i32>, Vec<i32>), String> {
     let (off, len) = *lump;
     let n = len as usize / DSHADERREF_SIZE;
     let mut names = Vec::with_capacity(n);
     let mut flags = Vec::with_capacity(n);
+    let mut contents = Vec::with_capacity(n);
     let mut i = off as usize;
     for _ in 0..n {
         let name_bytes = &data[i..i + 64];
         let end = name_bytes.iter().position(|&b| b == 0).unwrap_or(64);
         let name = String::from_utf8_lossy(&name_bytes[..end]).into_owned();
         let surf_flags = read_i32(data, i + 64);
+        let contents_flags = read_i32(data, i + 68);
         names.push(name);
         flags.push(surf_flags);
+        contents.push(contents_flags);
         i += DSHADERREF_SIZE;
     }
-    Ok((names, flags))
+    Ok((names, flags, contents))
 }
 
 fn parse_planes(data: &[u8], lump: &(u32, u32)) -> Vec<Plane> {
@@ -281,33 +334,54 @@ fn parse_drawable(
     let atlas_h = (atlas_rows * LIGHTMAP_H) as f32;
 
     // First pass: collect drawable faces grouped by shader.
-    // Group drawable faces by shader, carrying each face's lm_texnum.
-    let mut groups: Vec<Vec<Vec<usize>>> = vec![Vec::new(); shaders.len()];
-    let mut lm_per_face: Vec<Vec<i32>> = vec![Vec::new(); shaders.len()];
+    // Each face is either planar/trisurf (an element-index run) or a bezier
+    // patch (a control-point grid, tessellated during the emit pass).
+    #[derive(Clone)]
+    enum FaceRef {
+        Planar(Vec<usize>),
+        Patch { firstvert: usize, cp_w: usize, cp_h: usize },
+    }
+    let mut groups: Vec<Vec<(FaceRef, i32)>> = vec![Vec::new(); shaders.len()];
     for fi in 0..nfaces {
         let f = foff as usize + fi * DFACE_SIZE;
         let shadernum = read_i32(data, f) as usize;
         let facetype = read_i32(data, f + 8);
         let firstvert = read_i32(data, f + 12) as usize;
+        let numverts = read_i32(data, f + 16) as usize;
         let firstelem = read_i32(data, f + 20) as usize;
         let numelems = read_i32(data, f + 24) as usize;
         let lm_texnum = read_i32(data, f + 28);
 
-        if facetype != FACETYPE_PLANAR && facetype != FACETYPE_TRISURF {
-            continue;
-        }
         let shader_name = shaders.get(shadernum).map(|s| s.as_str()).unwrap_or("");
         if is_nodraw(shader_name) {
             continue;
         }
-        let mut idxs = Vec::with_capacity(numelems);
-        for e in 0..numelems {
-            let ei = eoff as usize + (firstelem + e) * 4;
-            let raw = read_i32(data, ei);
-            idxs.push((raw + firstvert as i32) as usize);
+
+        match facetype {
+            FACETYPE_PLANAR | FACETYPE_TRISURF => {
+                let mut idxs = Vec::with_capacity(numelems);
+                for e in 0..numelems {
+                    let ei = eoff as usize + (firstelem + e) * 4;
+                    let raw = read_i32(data, ei);
+                    idxs.push((raw + firstvert as i32) as usize);
+                }
+                groups[shadernum].push((FaceRef::Planar(idxs), lm_texnum));
+            }
+            FACETYPE_PATCH => {
+                // Control-point grid dimensions are the last two fields of the
+                // 104-byte `dface_t` (patch_cp[2] at byte offsets 96 and 100).
+                let cp_w = read_i32(data, f + 96) as usize;
+                let cp_h = read_i32(data, f + 100) as usize;
+                if cp_w < 2 || cp_h < 2 || numverts != cp_w * cp_h {
+                    continue; // malformed patch
+                }
+                groups[shadernum].push((
+                    FaceRef::Patch { firstvert, cp_w, cp_h },
+                    lm_texnum,
+                ));
+            }
+            _ => continue,
         }
-        groups[shadernum].push(idxs);
-        lm_per_face[shadernum].push(lm_texnum);
     }
 
     let mut rv: Vec<f32> = Vec::new();
@@ -320,26 +394,46 @@ fn parse_drawable(
         }
         let first_index = indices.len() as u32;
         let face_list = &groups[shadernum];
-        let lm_list = &lm_per_face[shadernum];
-        for (face_idx, face_verts) in face_list.iter().enumerate() {
-            let lm_texnum = lm_list[face_idx];
-            let (atlas_x, atlas_y) = lightmap_atlas_origin(lm_texnum, atlas_cols);
-            let base = rv.len() as u32 / 14;
-            for &vi in face_verts {
-                let v = raw_v[vi];
-                let au = (atlas_x as f32 + v[5] * LIGHTMAP_W as f32) / atlas_w;
-                let av = (atlas_y as f32 + v[6] * LIGHTMAP_H as f32) / atlas_h;
-                // 14 floats per vertex: pos(3) tex(2) lm(2) normal(3) color(4)
-                rv.extend_from_slice(&[
-                    v[0], v[1], v[2],   // pos (Z-up)
-                    v[3], v[4],          // tex uv
-                    au, av,              // lightmap atlas uv
-                    v[7], v[8], v[9],    // normal (Z-up)
-                    v[10], v[11], v[12], v[13], // r,g,b,a
-                ]);
-            }
-            for k in 0..face_verts.len() as u32 {
-                indices.push(base + k);
+        for face in face_list {
+            let (face_ref, lm_texnum) = face;
+            let (atlas_x, atlas_y) = lightmap_atlas_origin(*lm_texnum, atlas_cols);
+            match face_ref {
+                FaceRef::Planar(face_verts) => {
+                    let base = rv.len() as u32 / 14;
+                    for &vi in face_verts.iter() {
+                        emit_vertex(&mut rv, raw_v[vi], atlas_x, atlas_y, atlas_w, atlas_h);
+                    }
+                    for k in 0..face_verts.len() as u32 {
+                        indices.push(base + k);
+                    }
+                }
+                FaceRef::Patch { firstvert, cp_w, cp_h } => {
+                    let base = rv.len() as u32 / 14;
+                    let tess = 8usize; // subdivisions per patch dimension
+                    patch_tessellate(
+                        &mut rv,
+                        &raw_v,
+                        *firstvert,
+                        *cp_w,
+                        *cp_h,
+                        tess,
+                        atlas_x,
+                        atlas_y,
+                        atlas_w,
+                        atlas_h,
+                    );
+                    // n×n sub-patches → indices for a triangle grid.
+                    let n = tess + 1;
+                    for py in 0..tess {
+                        for px in 0..tess {
+                            let i0 = base + (py * n + px) as u32;
+                            let i1 = base + (py * n + px + 1) as u32;
+                            let i2 = base + ((py + 1) * n + px) as u32;
+                            let i3 = base + ((py + 1) * n + px + 1) as u32;
+                            indices.extend_from_slice(&[i0, i1, i2, i1, i3, i2]);
+                        }
+                    }
+                }
             }
         }
         let first = first_index;
@@ -348,6 +442,119 @@ fn parse_drawable(
     }
 
     Ok((rv, indices, chunks))
+}
+
+/// Append a single interleaved render vertex (14 f32) to `rv`, remapping the
+/// per-face lightmap (lu,lv) into atlas-space UVs.
+#[inline]
+fn emit_vertex(
+    rv: &mut Vec<f32>,
+    v: [f32; 14],
+    atlas_x: usize,
+    atlas_y: usize,
+    atlas_w: f32,
+    atlas_h: f32,
+) {
+    let au = (atlas_x as f32 + v[5] * LIGHTMAP_W as f32) / atlas_w;
+    let av = (atlas_y as f32 + v[6] * LIGHTMAP_H as f32) / atlas_h;
+    // 14 floats per vertex: pos(3) tex(2) lm(2) normal(3) color(4)
+    rv.extend_from_slice(&[
+        v[0], v[1], v[2],   // pos (Z-up)
+        v[3], v[4],          // tex uv
+        au, av,              // lightmap atlas uv
+        v[7], v[8], v[9],    // normal (Z-up)
+        v[10], v[11], v[12], v[13], // r,g,b,a
+    ]);
+}
+
+/// Tessellate a Q3-style bicubic Bézier patch (control points from the vertex
+/// lump, laid out as a `cp_w × cp_h` grid) into a `tess × tess` grid of
+/// vertices, appended to `rv` row-major. Bilinear interpolation of all vertex
+/// attributes (position, tex, lightmap, normal, color) via Bernstein blending.
+fn patch_tessellate(
+    rv: &mut Vec<f32>,
+    raw_v: &[[f32; 14]],
+    firstvert: usize,
+    cp_w: usize,
+    cp_h: usize,
+    tess: usize,
+    atlas_x: usize,
+    atlas_y: usize,
+    atlas_w: f32,
+    atlas_h: f32,
+) {
+    let n = tess + 1; // vertices per side
+    for py in 0..n {
+        let v = py as f32 / tess as f32;
+        for px in 0..n {
+            let u = px as f32 / tess as f32;
+            // Evaluate the Bézier surface at (u, v).
+            let mut acc = [0.0f32; 14];
+            let mut wsum = 0.0f32;
+            // Blend over control points (u across columns, v across rows).
+            for cpy in 0..cp_h {
+                let bv = bernstein(v, cpy, cp_h - 1);
+                if bv == 0.0 {
+                    continue;
+                }
+                for cpx in 0..cp_w {
+                    let bu = bernstein(u, cpx, cp_w - 1);
+                    let w = bu * bv;
+                    if w == 0.0 {
+                        continue;
+                    }
+                    let cp = raw_v[firstvert + cpy * cp_w + cpx];
+                    for k in 0..14 {
+                        acc[k] += cp[k] * w;
+                    }
+                    wsum += w;
+                }
+            }
+            // Normalize (should be ~1.0, but guard against degenerate patches).
+            let inv = if wsum > 0.0 { 1.0 / wsum } else { 1.0 };
+            let mut out = acc;
+            // Re-normalize the interpolated normal (blending shrinks it).
+            let nx = out[7] * inv;
+            let ny = out[8] * inv;
+            let nz = out[9] * inv;
+            let nlen = (nx * nx + ny * ny + nz * nz).sqrt();
+            if nlen > 1e-8 {
+                out[7] = nx / nlen;
+                out[8] = ny / nlen;
+                out[9] = nz / nlen;
+            } else {
+                out[7] = 0.0;
+                out[8] = 0.0;
+                out[9] = 1.0;
+            }
+            for k in 0..13 {
+                out[k] *= inv;
+            }
+            emit_vertex(rv, out, atlas_x, atlas_y, atlas_w, atlas_h);
+        }
+    }
+}
+
+/// Nth-order Bernstein polynomial basis for degree `deg`.
+fn bernstein(t: f32, i: usize, deg: usize) -> f32 {
+    if i > deg {
+        return 0.0;
+    }
+    // C(deg, i) * t^i * (1-t)^(deg-i)
+    let c = binomial(deg, i) as f32;
+    c * t.powi(i as i32) * (1.0 - t).powi((deg - i) as i32)
+}
+
+fn binomial(n: usize, k: usize) -> usize {
+    if k > n {
+        return 0;
+    }
+    let k = k.min(n - k);
+    let mut r = 1usize;
+    for i in 0..k {
+        r = r * (n - i) / (i + 1);
+    }
+    r
 }
 
 fn lightmap_atlas_origin(lm_texnum: i32, atlas_cols: usize) -> (usize, usize) {
@@ -364,7 +571,8 @@ fn lightmap_atlas_rows(lm_count: usize, atlas_cols: usize) -> usize {
 fn parse_brushes(
     data: &[u8],
     lumps: &[(u32, u32)],
-) -> Result<(Vec<u32>, Vec<u32>, Vec<u32>, Vec<i32>), String> {
+    shader_contents: &[i32],
+) -> Result<(Vec<u32>, Vec<u32>, Vec<u32>, Vec<i32>, Vec<i32>), String> {
     let (_moff, mlen) = lumps[LUMP_MODELS];
     let (boff, blen) = lumps[LUMP_BRUSHES];
     let (soff, slen) = lumps[LUMP_BRUSHSIDES];
@@ -382,6 +590,7 @@ fn parse_brushes(
     let mut counts = Vec::new();
     let mut plane_ids = Vec::new();
     let mut shaders = Vec::new();
+    let mut contents = Vec::new();
 
     for bi in 0..numbrushes {
         let b = boff as usize + (firstbrush as usize + bi as usize) * DBRUSH_SIZE;
@@ -392,9 +601,17 @@ fn parse_brushes(
         // All brushes referenced by model 0 are structural (solid) world
         // geometry. The brush's `shadernum` names its surface texture, whose
         // surfaceflags (SURF_SLICK etc.) drive gameplay (e.g. ice sliding).
+        // `contents` also rides along so water/lava volumes can still be
+        // detected via PointContents even though they collide as solid here.
         offsets.push(plane_ids.len() as u32);
         counts.push(bsnum);
         shaders.push(shadernum);
+        contents.push(
+            shader_contents
+                .get(shadernum as usize)
+                .copied()
+                .unwrap_or(0),
+        );
         for s in 0..bsnum {
             let sp = soff as usize + (bsoff as usize + s as usize) * DBRUSHSIDE_SIZE;
             let planenum = read_i32(data, sp) as u32;
@@ -402,7 +619,24 @@ fn parse_brushes(
         }
     }
 
-    Ok((offsets, counts, plane_ids, shaders))
+    Ok((offsets, counts, plane_ids, shaders, contents))
+}
+
+/// Enumerate the submodels (models 1..n) as `(firstbrush, numbrushes, mins,
+/// maxs)` so trigger entities (`model "*N"`) can be mapped to their volume.
+fn parse_submodels(data: &[u8], lump: &(u32, u32)) -> Vec<(u32, u32, [f32; 3], [f32; 3])> {
+    let (off, len) = *lump;
+    let n = len as usize / DMODEL_SIZE;
+    let mut out = Vec::with_capacity(n.saturating_sub(1));
+    for i in 1..n {
+        let p = off as usize + i * DMODEL_SIZE;
+        let mins = [read_f32(data, p), read_f32(data, p + 4), read_f32(data, p + 8)];
+        let maxs = [read_f32(data, p + 12), read_f32(data, p + 16), read_f32(data, p + 20)];
+        let firstbrush = read_i32(data, p + 32) as u32;
+        let numbrushes = read_i32(data, p + 36) as u32;
+        out.push((firstbrush, numbrushes, mins, maxs));
+    }
+    out
 }
 
 /// Parse player spawn points from the entity lump (text key/value blocks).
@@ -594,6 +828,137 @@ fn parse_race(
         .into_iter()
         .map(|(kind, mins, maxs)| RaceGate { kind, mins, maxs })
         .collect()
+}
+
+/// Parse jumppads (`trigger_push`) and teleporters (`trigger_teleport`) from
+/// the entity lump. Trigger volumes reference a submodel (`model "*N"`) whose
+/// AABB bounds the trigger; each also references a target entity that supplies
+/// either the launch destination (`target_position`/`info_notnull`) or the
+/// teleport destination (`misc_teleporter_dest`/`target_teleporter`).
+fn parse_triggers(
+    data: &[u8],
+    lump: &(u32, u32),
+    submodels: &[(u32, u32, [f32; 3], [f32; 3])],
+) -> (Vec<Jumppad>, Vec<Teleporter>) {
+    let (off, len) = *lump;
+    let text = String::from_utf8_lossy(&data[off as usize..(off + len) as usize]);
+
+    // First pass: collect target origins (targetname -> origin).
+    let mut target_origins: std::collections::HashMap<String, [f32; 3]> =
+        std::collections::HashMap::new();
+    for block in text.split('{').skip(1) {
+        let Some(end) = block.find('}') else { continue };
+        let block = &block[..end];
+        let kv = tokenize_entity(block);
+        let classname = get_entity(&kv, "classname");
+        let is_target = matches!(
+            classname,
+            "target_position"
+                | "info_notnull"
+                | "misc_teleporter_dest"
+                | "target_teleporter"
+        );
+        if !is_target {
+            continue;
+        }
+        let targetname = get_entity(&kv, "targetname");
+        if targetname.is_empty() {
+            continue;
+        }
+        if let Some(origin) = parse_origin(get_entity(&kv, "origin")) {
+            target_origins.insert(targetname.to_string(), origin);
+        }
+    }
+
+    let mut jumppads = Vec::new();
+    let mut teleporters = Vec::new();
+
+    for block in text.split('{').skip(1) {
+        let Some(end) = block.find('}') else { continue };
+        let block = &block[..end];
+        let kv = tokenize_entity(block);
+        let classname = get_entity(&kv, "classname");
+        let target = get_entity(&kv, "target");
+        let Some(num) = get_entity(&kv, "model")
+            .strip_prefix('*')
+            .and_then(|s| s.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        // submodels is indexed from model 1.
+        let Some((_, _, mins, maxs)) = submodels.get(num.wrapping_sub(1)) else {
+            continue;
+        };
+
+        match classname {
+            "trigger_push" => {
+                // Target is the apex of the jump; compute the ballistic launch
+                // velocity that arcs the player there (Q3 trigger_push_setup).
+                if let Some(t) = target_origins.get(target) {
+                    let origin = [
+                        (mins[0] + maxs[0]) * 0.5,
+                        (mins[1] + maxs[1]) * 0.5,
+                        (mins[2] + maxs[2]) * 0.5,
+                    ];
+                    let height = t[2] - origin[2];
+                    let gravity = crate::GRAVITY;
+                    let time = (height / (0.5 * gravity)).sqrt();
+                    if time > 0.0 {
+                        let mut vel = [t[0] - origin[0], t[1] - origin[1], 0.0];
+                        let dist = (vel[0] * vel[0] + vel[1] * vel[1]).sqrt();
+                        let nspeed = if dist > 0.0 { dist / time } else { 0.0 };
+                        vel[0] = if dist > 0.0 { vel[0] / dist * nspeed } else { 0.0 };
+                        vel[1] = if dist > 0.0 { vel[1] / dist * nspeed } else { 0.0 };
+                        vel[2] = time * gravity;
+                        jumppads.push(Jumppad { mins: *mins, maxs: *maxs, velocity: vel });
+                    }
+                }
+            }
+            "trigger_teleport" => {
+                if let Some(dest) = target_origins.get(target) {
+                    teleporters.push(Teleporter {
+                        mins: *mins,
+                        maxs: *maxs,
+                        dest_origin: *dest,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (jumppads, teleporters)
+}
+
+/// Get an entity key's string value (empty if absent).
+fn get_entity<'a>(kv: &'a std::collections::HashMap<String, String>, key: &str) -> &'a str {
+    kv.get(key).map(String::as_str).unwrap_or("")
+}
+
+/// Tokenize an entity `{ ... }` block into a lowercase key -> value map.
+fn tokenize_entity(block: &str) -> std::collections::HashMap<String, String> {
+    let mut kv = std::collections::HashMap::new();
+    let mut tokens: Vec<&str> = Vec::new();
+    for chunk in block.split('"') {
+        let c = chunk.trim();
+        if !c.is_empty() {
+            tokens.push(c);
+        }
+    }
+    let mut i = 0;
+    while i + 1 < tokens.len() {
+        kv.insert(tokens[i].to_string(), tokens[i + 1].to_string());
+        i += 2;
+    }
+    kv
+}
+
+fn parse_origin(s: &str) -> Option<[f32; 3]> {
+    let mut parts = s.split_whitespace();
+    let x = parts.next()?.parse().ok()?;
+    let y = parts.next()?.parse().ok()?;
+    let z = parts.next()?.parse().ok()?;
+    Some([x, y, z])
 }
 
 /// Shaders matching these substrings are not drawn (same skip list as wf-tool).

@@ -30,6 +30,10 @@ fn slick_ramp_world() -> World {
         brush_plane_ids: (0..6).collect(),
         brush_shaders: vec![0],
         shader_flags: vec![SURF_SLICK],
+        shader_contents: vec![0],
+        brush_contents: vec![webrace_core::bsp::CONTENTS_SOLID],
+        jumppads: vec![],
+        teleporters: vec![],
         planes,
     }
 }

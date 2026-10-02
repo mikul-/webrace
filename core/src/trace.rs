@@ -7,7 +7,7 @@
 
 #![allow(dead_code)]
 
-use crate::bsp::{Bsp, Plane};
+use crate::bsp::{Bsp, Jumppad, Plane, Teleporter};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TraceResult {
@@ -17,6 +17,8 @@ pub struct TraceResult {
     pub start_solid: bool,
     /// Surface flags (SURF_SLICK etc.) of the surface that was hit (0 if none).
     pub surface_flags: i32,
+    /// Contents flags (CONTENTS_WATER etc.) of the surface that was hit.
+    pub contents: i32,
 }
 
 /// Player collision box (Warfork default bounding box, in world units).
@@ -33,9 +35,17 @@ pub struct World {
     pub brush_plane_ids: Vec<u32>,
     /// Shader index of each collision brush (parallel to the brush arrays).
     pub brush_shaders: Vec<i32>,
+    /// Contents flags (CONTENTS_WATER etc.) of each brush (parallel arrays).
+    pub brush_contents: Vec<i32>,
     pub planes: Vec<Plane>,
     /// Surface flags (SURF_SLICK etc.) per shader, used for slick/gameplay.
     pub shader_flags: Vec<i32>,
+    /// Contents flags (CONTENTS_WATER etc.) per shader.
+    pub shader_contents: Vec<i32>,
+    /// Jumppad trigger volumes.
+    pub jumppads: Vec<Jumppad>,
+    /// Teleporter trigger volumes.
+    pub teleporters: Vec<Teleporter>,
 }
 
 impl World {
@@ -45,10 +55,27 @@ impl World {
             brush_plane_count: bsp.brush_plane_count.clone(),
             brush_plane_ids: bsp.brush_plane_ids.clone(),
             brush_shaders: bsp.brush_shaders.clone(),
+            brush_contents: bsp.brush_contents.clone(),
             planes: bsp.planes.clone(),
             shader_flags: bsp.shader_flags.clone(),
+            shader_contents: bsp.shader_contents.clone(),
+            jumppads: bsp.jumppads.clone(),
+            teleporters: bsp.teleporters.clone(),
         }
     }
+}
+
+/// Does this contents word block the player? Mirrors Q3's `MASK_PLAYERSOLID`
+/// (`CONTENTS_SOLID|CONTENTS_PLAYERCLIP|CONTENTS_BODY`), minus liquids: a brush
+/// bearing only water/lava/slime/translucent contents is a non-solid volume.
+pub fn is_solid_contents(contents: i32) -> bool {
+    const MASK_WATER: i32 = crate::bsp::CONTENTS_WATER
+        | crate::bsp::CONTENTS_LAVA
+        | crate::bsp::CONTENTS_SLIME;
+    if contents & MASK_WATER != 0 {
+        return false;
+    }
+    contents & (crate::bsp::CONTENTS_SOLID | crate::bsp::CONTENTS_PLAYERCLIP) != 0
 }
 
 impl World {
@@ -65,6 +92,7 @@ impl World {
         let mut best_frac = 1.0f32;
         let mut best_normal = [0.0f32; 3];
         let mut best_surface_flags = 0i32;
+        let mut best_contents = 0i32;
         let mut start_solid = false;
         let all_solid = true;
 
@@ -94,6 +122,11 @@ impl World {
         for i in 0..self.brush_plane_offsets.len() {
             let offset = self.brush_plane_offsets[i] as usize;
             let count = self.brush_plane_count[i] as usize;
+            // Skip non-solid (liquid/trigger) brushes for movement collision.
+            let brush_contents = self.brush_contents.get(i).copied().unwrap_or(0);
+            if !is_solid_contents(brush_contents) {
+                continue;
+            }
             // Surface flags of this brush (via its shader), used for slick etc.
             let brush_surface_flags = self
                 .brush_shaders
@@ -169,6 +202,7 @@ impl World {
                 start_solid = true;
                 best_normal = deepest_normal;
                 best_surface_flags = brush_surface_flags;
+                best_contents = brush_contents;
                 break;
             }
 
@@ -187,11 +221,13 @@ impl World {
                         best_frac = 0.0;
                         best_normal = enter_normal;
                         best_surface_flags = brush_surface_flags;
+                        best_contents = brush_contents;
                     }
                 } else if enter < best_frac {
                     best_frac = enter;
                     best_normal = enter_normal;
                     best_surface_flags = brush_surface_flags;
+                    best_contents = brush_contents;
                 }
             }
         }
@@ -205,6 +241,7 @@ impl World {
                 all_solid,
                 start_solid: true,
                 surface_flags: best_surface_flags,
+                contents: best_contents,
             };
         }
 
@@ -214,6 +251,86 @@ impl World {
             all_solid,
             start_solid: false,
             surface_flags: best_surface_flags,
+            contents: best_contents,
         }
     }
+
+    /// Return the contents flags of the topmost non-solid (content) brush
+    /// containing the point, OR of zero (empty). Mirrors Q3 `PointContents`:
+    /// the point is inside a brush iff it is on the negative side of every
+    /// bounding plane (with a small inward epsilon for boundary tolerance).
+    pub fn point_contents(&self, point: [f32; 3]) -> i32 {
+        let mut result = 0i32;
+        for i in 0..self.brush_plane_offsets.len() {
+            let contents = self.brush_contents.get(i).copied().unwrap_or(0);
+            // Only non-solid content volumes contribute contents here; the
+            // caller combines this with solid collision separately.
+            if is_solid_contents(contents) {
+                continue;
+            }
+            let offset = self.brush_plane_offsets[i] as usize;
+            let count = self.brush_plane_count[i] as usize;
+            let mut inside = true;
+            for p in 0..count {
+                let pid = self.brush_plane_ids[offset + p] as usize;
+                let Some(plane) = self.planes.get(pid) else {
+                    inside = false;
+                    break;
+                };
+                // Inside = on the negative side (plane dist = dot(point,n)-d).
+                let d = point[0] * plane.normal[0]
+                    + point[1] * plane.normal[1]
+                    + point[2] * plane.normal[2]
+                    - plane.dist;
+                if d > 0.0 {
+                    inside = false;
+                    break;
+                }
+            }
+            if inside {
+                result |= contents;
+            }
+        }
+        result
+    }
+
+    /// First jumppad whose AABB contains the player (origin + mins/maxs).
+    pub fn jumppad_at(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> Option<&Jumppad> {
+        self.jumppads.iter().find(|jp| {
+            aabb_overlap(
+                origin,
+                mins,
+                maxs,
+                jp.mins,
+                jp.maxs,
+            )
+        })
+    }
+
+    /// First teleporter whose AABB contains the player.
+    pub fn teleporter_at(&self, origin: [f32; 3], mins: [f32; 3], maxs: [f32; 3]) -> Option<&Teleporter> {
+        self.teleporters.iter().find(|tp| {
+            aabb_overlap(
+                origin,
+                mins,
+                maxs,
+                tp.mins,
+                tp.maxs,
+            )
+        })
+    }
+}
+
+fn aabb_overlap(
+    origin: [f32; 3],
+    mins: [f32; 3],
+    maxs: [f32; 3],
+    bmins: [f32; 3],
+    bmaxs: [f32; 3],
+) -> bool {
+    let amin = [origin[0] + mins[0], origin[1] + mins[1], origin[2] + mins[2]];
+    let amax = [origin[0] + maxs[0], origin[1] + maxs[1], origin[2] + maxs[2]];
+    amin[0] <= bmaxs[0] && amax[0] >= bmins[0]
+        && amin[1] <= bmaxs[1] && amax[1] >= bmins[1]
+        && amin[2] <= bmaxs[2] && amax[2] >= bmins[2]
 }
