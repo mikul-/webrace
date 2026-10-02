@@ -76,6 +76,14 @@ pub const SURF_SLICK: i32 = 0x2;
 pub const PM_WATERACCELERATE: f32 = 10.0;
 pub const PM_WATERFRICTION: f32 = 1.0;
 
+/// Step height used by `PM_StepSlideMove` (Q3 `STEPSIZE`, Warfork too).
+pub const STEPSIZE: f32 = 18.0;
+/// Q3 `OVERCLIP`: clip velocity against surfaces with a slight overbounce to
+/// keep the player glued to the ground/walls without losing speed on stairs.
+pub const OVERCLIP: f32 = 1.001;
+/// Q3 `MIN_STEP_NORMAL`: a plane steeper than this is not walkable.
+pub const MIN_STEP_NORMAL: f32 = 0.7;
+
 pub struct Pmove {
     pub world: World,
     pub frametime: f32,
@@ -357,14 +365,27 @@ impl Pmove {
         ps.velocity[2] -= GRAVITY * self.frametime;
 
         // When grounded, clip velocity against the ground plane so the player
-        // stays on the surface and the gravity component becomes slide motion.
+        // stays on the surface, then re-normalize to keep full speed (Q3
+        // `PM_WalkMove` lines 790-798) — this is what lets the player glide up
+        // stairs/ledges without losing speed or catching their toe.
         if ps.on_ground {
             let n = ps.ground_normal;
-            let dot = ps.velocity[0] * n[0] + ps.velocity[1] * n[1] + ps.velocity[2] * n[2];
-            if dot < 0.0 {
-                ps.velocity[0] -= n[0] * dot;
-                ps.velocity[1] -= n[1] * dot;
-                ps.velocity[2] -= n[2] * dot;
+            let speed = (ps.velocity[0] * ps.velocity[0]
+                + ps.velocity[1] * ps.velocity[1]
+                + ps.velocity[2] * ps.velocity[2])
+                .sqrt();
+            if speed > 0.0 {
+                clip_velocity(&mut ps.velocity, n, OVERCLIP);
+                let clipped = (ps.velocity[0] * ps.velocity[0]
+                    + ps.velocity[1] * ps.velocity[1]
+                    + ps.velocity[2] * ps.velocity[2])
+                    .sqrt();
+                if clipped > 0.0 {
+                    let s = speed / clipped;
+                    ps.velocity[0] *= s;
+                    ps.velocity[1] *= s;
+                    ps.velocity[2] *= s;
+                }
             }
         }
 
@@ -791,55 +812,80 @@ impl Pmove {
         ps.velocity[2] = zspeed;
     }
 
-    /// Slide the player along the world. First tries stair-stepping; otherwise
-    /// performs Quake-style PM_SlideMove (multi-pass plane clipping).
+    /// Slide the player along the world. Faithful Q3 `PM_StepSlideMove`: slide,
+    /// and if blocked by a step/obstruction, try stepping up by `stepSize`
+    /// (the actual cleared distance, capped at `STEPSIZE`), slide above, then
+    /// trace back down. The "never step while rising" guard avoids spurious
+    /// auto-climbing mid-jump, which is what makes Q3 feel clean on ledges.
     fn slide_move(&mut self, ps: &mut PlayerState) {
         let mins = self.mins;
         let maxs = self.maxs;
 
-        let start = ps.origin;
-        let end = [
-            start[0] + ps.velocity[0] * self.frametime,
-            start[1] + ps.velocity[1] * self.frametime,
-            start[2] + ps.velocity[2] * self.frametime,
-        ];
+        let start_o = ps.origin;
+        let start_v = ps.velocity;
 
-        let tr = self.world.trace(start, mins, maxs, end);
-        if tr.fraction >= 1.0 {
-            ps.origin = end;
+        // First, a plain slide. If it went all the way, we're done.
+        let blocked = self.slide_clip(ps, mins, maxs);
+        if !blocked {
             return;
         }
 
-        // If we started embedded (start_solid), push the player out along the
-        // axis that actually clears them (wall corners embed horizontally, so
-        // a single "up" push is often wrong).
-        if tr.start_solid {
-            self.resolve_solid(ps, start, mins, maxs);
-            // Zero the into-surface velocity.
-            let n = tr.normal;
-            let dot = ps.velocity[0] * n[0] + ps.velocity[1] * n[1] + ps.velocity[2] * n[2];
-            if dot < 0.0 {
-                ps.velocity[0] -= n[0] * dot;
-                ps.velocity[1] -= n[1] * dot;
-                ps.velocity[2] -= n[2] * dot;
+        // Never step up when still rising (mid-jump); Q3 checks this with a
+        // down-trace and the up-velocity guard before attempting a step.
+        {
+            let down = [start_o[0], start_o[1], start_o[2] - STEPSIZE];
+            let tr = self.world.trace(start_o, mins, maxs, down);
+            let up = [0.0, 0.0, 1.0];
+            if ps.velocity[2] > 0.0
+                && (tr.fraction >= 1.0 || tr.normal[0] * up[0] + tr.normal[1] * up[1] + tr.normal[2] * up[2] < MIN_STEP_NORMAL)
+            {
+                // Can't step while moving up (e.g. jumping). Keep the slide.
+                return;
             }
+        }
+
+        // Save the post-slide origin/velocity (the "down" candidate).
+        let down_o = ps.origin;
+        let down_v = ps.velocity;
+
+        // Trace up by STEPSIZE to find the actual step height (ceilings reduce it).
+        let up = [start_o[0], start_o[1], start_o[2] + STEPSIZE];
+        let tr = self.world.trace(start_o, mins, maxs, up);
+        if tr.start_solid || tr.all_solid {
+            return; // ceiling too low to step
+        }
+        let step_size = (start_o[2] + STEPSIZE * tr.fraction) - start_o[2];
+
+        // Slide from the raised position, preserving the original velocity.
+        ps.origin = [start_o[0], start_o[1], start_o[2] + step_size];
+        ps.velocity = start_v;
+        self.slide_clip(ps, mins, maxs);
+
+        // Trace back down by step_size and land on whatever is there.
+        let down = [ps.origin[0], ps.origin[1], ps.origin[2] - step_size];
+        let tr = self.world.trace(ps.origin, mins, maxs, down);
+        if !tr.start_solid && !tr.all_solid {
+            ps.origin = [
+                ps.origin[0] + (down[0] - ps.origin[0]) * tr.fraction,
+                ps.origin[1] + (down[1] - ps.origin[1]) * tr.fraction,
+                ps.origin[2] + (down[2] - ps.origin[2]) * tr.fraction,
+            ];
+        }
+        // If the down trace hit a surface, clip the velocity against it so we
+        // don't bounce off the step we just climbed.
+        if tr.fraction < 1.0 {
+            clip_velocity(&mut ps.velocity, tr.normal, OVERCLIP);
+        }
+
+        // Reject the step if we didn't actually climb (Q3 keeps whichever move
+        // went farther horizontally; we approximate with a height check).
+        if ps.origin[2] <= start_o[2] + 0.01 {
+            ps.origin = down_o;
+            ps.velocity = down_v;
             return;
         }
 
-        // Blocked — try stair-stepping only when running into a WALL (near
-        // vertical surface), not when descending a floor/slope. Otherwise
-        // going down ramps would try to "step up" every tick (bumpy).
-        let is_wall = tr.normal[2].abs() < 0.7;
-        let horizontal =
-            (ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]).sqrt();
-        if is_wall && horizontal > 1.0 && self.try_step_up(ps, start, mins, maxs, end) {
-            return;
-        }
-
-        self.slide_clip(ps, start, tr, mins, maxs);
-
-        // Final safety: if the slide left the player embedded (e.g. wedged in
-        // a reentrant inside corner), push them out along the axis that clears.
+        // Final safety: if the slide left the player embedded, unstick them.
         let chk = self.world.trace(ps.origin, mins, maxs, ps.origin);
         if chk.start_solid {
             self.resolve_solid(ps, ps.origin, mins, maxs);
@@ -878,134 +924,132 @@ impl Pmove {
         // No direction cleared (fully embedded); leave as-is.
     }
 
-    /// Attempt an 18-unit stair-step (Quake PM_StepSlideMove). Returns true if
-    /// a step was performed. Only fires when grounded and when the forward
-    /// step actually makes meaningful progress (so running into a tall wall
-    /// does not slowly "climb" it).
-    fn try_step_up(
-        &mut self,
-        ps: &mut PlayerState,
-        start: [f32; 3],
-        mins: [f32; 3],
-        maxs: [f32; 3],
-        _end: [f32; 3],
-    ) -> bool {
-        // Only step when on the ground (not while pressed against a wall in
-        // the air).
-        if !ps.on_ground {
-            return false;
-        }
-
-        let step = 18.0;
-        let up_pos = [start[0], start[1], start[2] + step];
-        let up_tr = self.world.trace(start, mins, maxs, up_pos);
-        if up_tr.fraction < 1.0 {
-            return false;
-        }
-        let fwd_end = [
-            up_pos[0] + ps.velocity[0] * self.frametime,
-            up_pos[1] + ps.velocity[1] * self.frametime,
-            up_pos[2],
-        ];
-        let fwd_tr = self.world.trace(up_pos, mins, maxs, fwd_end);
-        // Require meaningful forward progress (> 0.5 of the intended move),
-        // otherwise we're just running into a tall wall.
-        if fwd_tr.fraction <= 0.5 {
-            return false;
-        }
-        let at = [
-            up_pos[0] + (fwd_end[0] - up_pos[0]) * fwd_tr.fraction,
-            up_pos[1] + (fwd_end[1] - up_pos[1]) * fwd_tr.fraction,
-            up_pos[2],
-        ];
-        let down_end = [at[0], at[1], at[2] - step];
-        let down_tr = self.world.trace(at, mins, maxs, down_end);
-        // The landing must be no higher than a valid step (don't climb walls).
-        let new_z = at[2] - step * down_tr.fraction;
-        if new_z > start[2] + step + 1.0 {
-            return false;
-        }
-        ps.origin = [at[0], at[1], new_z];
-        if ps.velocity[2] < 0.0 {
-            ps.velocity[2] = 0.0;
-        }
-        true
-    }
-
-    /// Quake PM_SlideMove: clip velocity against hit planes, re-tracing the
-    /// leftover movement, up to MAX_CLIP_PLANES (5) passes, so the player
-    /// slides along walls and into corners without sticking.
-    #[allow(unused_assignments)]
-    fn slide_clip(
-        &mut self,
-        ps: &mut PlayerState,
-        start: [f32; 3],
-        _first_tr: crate::trace::TraceResult,
-        mins: [f32; 3],
-        maxs: [f32; 3],
-    ) {
+    /// Q3 `PM_SlideMove`: move along the world, clipping velocity against up to
+    /// `MAX_CLIP_PLANES` planes, sliding along walls and creases. Returns true
+    /// if the move was blocked (clipped) before reaching the full distance.
+    fn slide_clip(&mut self, ps: &mut PlayerState, mins: [f32; 3], maxs: [f32; 3]) -> bool {
         const MAX_CLIP_PLANES: usize = 5;
+        let numbumps = 4;
         let mut planes: [[f32; 3]; MAX_CLIP_PLANES] = [[0.0; 3]; MAX_CLIP_PLANES];
-        let mut num_planes = 0;
+        let mut numplanes = 0usize;
 
-        // Remaining displacement starts as the full tick's movement.
-        let mut remaining = [
-            ps.velocity[0] * self.frametime,
-            ps.velocity[1] * self.frametime,
-            ps.velocity[2] * self.frametime,
-        ];
-        let mut cur = start;
+        // Keep the original velocity for the final `pm_time` check parity.
+        let primal_velocity = ps.velocity;
 
-        for _pass in 0..MAX_CLIP_PLANES {
-            let target = [cur[0] + remaining[0], cur[1] + remaining[1], cur[2] + remaining[2]];
-            let tr = self.world.trace(cur, mins, maxs, target);
+        // Pre-seed the ground plane so we never turn against it (Q3: this keeps
+        // the player glued to the ground, gliding up stairs instead of catching
+        // their toe and stopping at each step).
+        if ps.on_ground {
+            planes[0] = ps.ground_normal;
+            numplanes = 1;
+        }
 
-            if tr.fraction >= 1.0 {
-                cur = target;
-                break;
+        let mut time_left = self.frametime;
+        let mut blocked = false;
+
+        for _bump in 0..numbumps {
+            let end = [
+                ps.origin[0] + time_left * ps.velocity[0],
+                ps.origin[1] + time_left * ps.velocity[1],
+                ps.origin[2] + time_left * ps.velocity[2],
+            ];
+            let tr = self.world.trace(ps.origin, mins, maxs, end);
+
+            if tr.all_solid {
+                // Completely trapped; zero vertical so we don't build up fall
+                // damage, but keep horizontal.
+                ps.velocity[2] = 0.0;
+                return true;
             }
 
-            // Advance up to the impact + epsilon.
-            let n = tr.normal;
-            let eps = 0.05;
-            cur = [
-                cur[0] + remaining[0] * tr.fraction + n[0] * eps,
-                cur[1] + remaining[1] * tr.fraction + n[1] * eps,
-                cur[2] + remaining[2] * tr.fraction + n[2] * eps,
-            ];
+            if tr.start_solid {
+                // Started embedded — unstick and bail.
+                self.resolve_solid(ps, ps.origin, mins, maxs);
+                return true;
+            }
 
-            // Reject planes already clipped against (avoid oscillation).
-            let mut skip = false;
-            for p in 0..num_planes {
-                let d = planes[p][0] * n[0] + planes[p][1] * n[1] + planes[p][2] * n[2];
+            if tr.fraction > 0.0 {
+                ps.origin = [
+                    ps.origin[0] + (end[0] - ps.origin[0]) * tr.fraction,
+                    ps.origin[1] + (end[1] - ps.origin[1]) * tr.fraction,
+                    ps.origin[2] + (end[2] - ps.origin[2]) * tr.fraction,
+                ];
+            }
+
+            if tr.fraction >= 1.0 {
+                break; // moved the whole distance
+            }
+
+            blocked = true;
+            time_left -= time_left * tr.fraction;
+
+            if numplanes >= MAX_CLIP_PLANES {
+                ps.velocity = [0.0, 0.0, 0.0];
+                return true;
+            }
+
+            // If this is a plane we hit before, nudge along it (fixes epsilon
+            // binding on non-axial planes).
+            let normal = tr.normal;
+            let mut repeated = false;
+            for p in 0..numplanes {
+                let d = planes[p][0] * normal[0] + planes[p][1] * normal[1] + planes[p][2] * normal[2];
                 if d > 0.99 {
-                    skip = true;
+                    ps.velocity[0] += normal[0];
+                    ps.velocity[1] += normal[1];
+                    ps.velocity[2] += normal[2];
+                    repeated = true;
                     break;
                 }
             }
-            if skip {
-                break;
+            if repeated {
+                continue;
             }
-            planes[num_planes] = n;
-            num_planes += 1;
+            planes[numplanes] = normal;
+            numplanes += 1;
 
-            // Clip the velocity against this plane.
-            let dot = ps.velocity[0] * n[0] + ps.velocity[1] * n[1] + ps.velocity[2] * n[2];
-            if dot < 0.0 {
-                ps.velocity[0] -= n[0] * dot;
-                ps.velocity[1] -= n[1] * dot;
-                ps.velocity[2] -= n[2] * dot;
+            // Clip the velocity so it parallels all clip planes.
+            let mut i = 0;
+            while i < numplanes {
+                let into = ps.velocity[0] * planes[i][0] + ps.velocity[1] * planes[i][1] + ps.velocity[2] * planes[i][2];
+                if into >= 0.1 {
+                    i += 1;
+                    continue;
+                }
+                // Slide along this plane.
+                clip_velocity(&mut ps.velocity, planes[i], OVERCLIP);
+
+                // Check a second plane.
+                let mut j = 0;
+                while j < numplanes {
+                    if j == i {
+                        j += 1;
+                        continue;
+                    }
+                    let into2 = ps.velocity[0] * planes[j][0] + ps.velocity[1] * planes[j][1] + ps.velocity[2] * planes[j][2];
+                    if into2 >= 0.1 {
+                        j += 1;
+                        continue;
+                    }
+                    clip_velocity(&mut ps.velocity, planes[j], OVERCLIP);
+                    // If it went back into the first plane, slide along the crease.
+                    let back = ps.velocity[0] * planes[i][0] + ps.velocity[1] * planes[i][1] + ps.velocity[2] * planes[i][2];
+                    if back < 0.0 {
+                        // Slide the velocity along the crease (cross product).
+                        let dir = cross(planes[i], planes[j]);
+                        let d = ps.velocity[0] * dir[0] + ps.velocity[1] * dir[1] + ps.velocity[2] * dir[2];
+                        ps.velocity = [dir[0] * d, dir[1] * d, dir[2] * d];
+                    }
+                    j += 1;
+                }
+                i += 1;
             }
-
-            // Remaining movement uses the (clipped) velocity for the rest.
-            remaining = [
-                ps.velocity[0] * self.frametime * (1.0 - tr.fraction),
-                ps.velocity[1] * self.frametime * (1.0 - tr.fraction),
-                ps.velocity[2] * self.frametime * (1.0 - tr.fraction),
-            ];
         }
 
-        ps.origin = cur;
+        // Don't change velocity if in a timer (we have no timer concept here).
+        let _ = primal_velocity;
+
+        blocked
     }
 
     fn update_ground(&mut self, ps: &mut PlayerState) {
@@ -1037,3 +1081,26 @@ impl Pmove {
 
 /// Convenience for tests: expose the crouch max speed.
 pub const CROUCH_SPEEDV: f32 = CROUCH_SPEED;
+
+/// Q3 `PM_ClipVelocity`: slide a velocity off a surface normal with a slight
+/// overbounce (or underbounce, depending on direction).
+fn clip_velocity(vel: &mut [f32; 3], normal: [f32; 3], overbounce: f32) {
+    let mut backoff = vel[0] * normal[0] + vel[1] * normal[1] + vel[2] * normal[2];
+    if backoff < 0.0 {
+        backoff *= overbounce;
+    } else {
+        backoff /= overbounce;
+    }
+    vel[0] -= normal[0] * backoff;
+    vel[1] -= normal[1] * backoff;
+    vel[2] -= normal[2] * backoff;
+}
+
+/// Cross product of two vectors (for crease sliding).
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}

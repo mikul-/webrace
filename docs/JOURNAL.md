@@ -91,7 +91,6 @@ reconstruct context without re-deriving it.
   drops brushes (a one-element-too-short `brush_contents` cost a wall-dash test).
 
 ### Forward-jump speed bug
-- Two related issues made a plain forward jump ramp from 320 to ~640 ups where
   Warfork lands ~350:
   1. `aircontrol` ported C `VectorNormalize` (which normalizes *in place* and
      returns the length) wrong: it multiplied the *full* velocity by `speed`
@@ -106,6 +105,34 @@ reconstruct context without re-deriving it.
   Result: forward jump lands at ~354 (320 → +34 over one arc), matching Warfork.
   Strafe-jump still climbs past 320 via the air-accel sweet spot.
 - Regression test `forward_jump.rs` asserts a forward jump lands < 400 ups.
+
+### Wall clipping / stairs / ledges (Q3 `PM_StepSlideMove` + `PM_SlideMove`)
+- The player could "barely walk up" stacked ledges/steps. Compared our code to
+  Warfork `gs_pmove.c` and Q3 `bg_pmove.c`/`bg_slidemove.c`:
+  - **Q3 (the best)** `PM_SlideMove` pre-seeds `planes[0] = groundTrace.plane.normal`
+    (and a normalized-velocity plane) so the box never turns against the ground,
+    and `PM_WalkMove` clips velocity to the ground plane then **re-normalizes**
+    (`VectorNormalize` + `VectorScale` back to the saved magnitude) so speed is
+    preserved while gliding up steps. `PM_StepSlideMove` also has a "**never step
+    up while still rising**" guard (down-trace + up-velocity check) that makes
+    ledge traversal clean instead of auto-climbing mid-jump.
+  - Warfork shares the step-up but lacks the re-normalize-on-ground-clip and the
+    rising guard, and its SlideMove starts cold (`numplanes=0`) — so it catches
+    toes on steps too.
+  - Ours additionally had fewer clip planes and a hardcoded epsilon nudge instead
+    of Q3's "re-add the plane normal when the same plane recurs".
+- Implemented the Q3 model: `slide_clip` = `PM_SlideMove` (ground-plane pre-seed,
+  `OVERCLIP` 1.001, repeated-plane nudge, crease slide), `slide_move` =
+  `PM_StepSlideMove` (slide → step up by actual `stepSize` → slide → trace down →
+  clip, with the never-step-while-rising guard), and `ground_move`/`step` now clip
+  velocity to the ground normal then re-normalize (speed preserved).
+- **Latent bug found**: `trace.rs` hardcoded `all_solid = true` (never updated).
+  The old slide code never read it, but the faithful `PM_SlideMove` does
+  (`if trace.allsolid` returns early), so every move was killed. Fixed to `false`
+  (our trace returns on `start_solid` rather than probing an exit, so the two
+  coincide).
+- Regression test `stairs.rs`: the player climbs three 8-unit steps (z 24 → 48)
+  and descends the far side while running, no jumping.
 
 ### Jumppad/teleporter trigger geometry fix
 - Trigger volumes were first detected by their **submodel AABB**, which is wrong

@@ -97,7 +97,11 @@ impl World {
         let mut best_surface_flags = 0i32;
         let mut best_contents = 0i32;
         let mut start_solid = false;
-        let all_solid = true;
+        // `all_solid` (Q3 "trapped in solid with no exit") is approximated by
+        // `start_solid` in this trace: we return immediately on embedding rather
+        // than probing for an exit, so the two coincide. It is never `true`
+        // for a non-embedded trace.
+        let all_solid = false;
 
         let delta = [
             end[0] - start[0],
