@@ -115,6 +115,30 @@ pub fn session_speed(id: usize) -> f32 {
     })
 }
 
+/// Player world-space origin (box center, Z-up).
+#[wasm_bindgen]
+pub fn session_origin(id: usize) -> Vec<f32> {
+    SESSIONS.with(|s| {
+        s.borrow()
+            .get(id)
+            .and_then(|o| o.as_ref())
+            .map(|s| s.origin().to_vec())
+            .unwrap_or_else(|| vec![0.0, 0.0, 0.0])
+    })
+}
+
+/// Player velocity (Z-up).
+#[wasm_bindgen]
+pub fn session_velocity(id: usize) -> Vec<f32> {
+    SESSIONS.with(|s| {
+        s.borrow()
+            .get(id)
+            .and_then(|o| o.as_ref())
+            .map(|s| s.velocity().to_vec())
+            .unwrap_or_else(|| vec![0.0, 0.0, 0.0])
+    })
+}
+
 /// Movement HUD data (8 floats): velocity[3], wishdir[3], speed, accel.
 #[wasm_bindgen]
 pub fn session_movement_hint(id: usize) -> Vec<f32> {

@@ -17,6 +17,7 @@ const overlay = document.getElementById("overlay")!;
 const statusEl = document.getElementById("status")!;
 const fpsEl = document.getElementById("fps")!;
 const speedEl = document.getElementById("speed")!;
+const coordsEl = document.getElementById("coords")!;
 const mapInput = document.getElementById("map") as HTMLInputElement;
 const nicknameInput = document.getElementById("nickname") as HTMLInputElement;
 const playBtn = document.getElementById("play")!;
@@ -401,6 +402,13 @@ function loop() {
 
     const speed = core.session_speed(sessionId);
     speedEl.textContent = `${Math.round(speed)} ups`;
+
+    // World position + velocity readout (for debugging movement).
+    const o = core.session_origin(sessionId) as unknown as Float32Array;
+    const vel = core.session_velocity(sessionId) as unknown as Float32Array;
+    coordsEl.textContent =
+      `pos ${o[0].toFixed(1)} ${o[1].toFixed(1)} ${o[2].toFixed(1)}\n` +
+      `vel ${vel[0].toFixed(1)} ${vel[1].toFixed(1)} ${vel[2].toFixed(1)}`;
 
     // Movement HUD (strafe/bunny indicators + accel bar).
     const hint = core.session_movement_hint(sessionId) as unknown as Float32Array;
