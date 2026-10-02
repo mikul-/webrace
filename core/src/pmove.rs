@@ -357,31 +357,30 @@ impl Pmove {
 
         // Ground friction / movement.
         if ps.on_ground {
+            if ps.velocity[2] > 0.0 {
+                ps.velocity[2] = 0.0; // Warfork zeroes upward velocity on ground
+            }
             self.ground_move(ps, forward, right, fwd_push, side_push);
         } else {
             self.air_move(ps, forward, right, fwd_push, side_push);
         }
 
-        // Gravity. Warfork applies it in the air, and on slick ground (so the
-        // player slides down ramps); on normal (non-slick) ground it does NOT
-        // apply gravity — the ground holds the player up and the ground-plane
-        // clip below redirects horizontal motion. Applying it on normal ground
-        // leaks a residual horizontal speed when combined with the clip (the
-        // "keep drifting at 14 ups after stopping" bug).
+        // Gravity: only in the air, or on slick ground (so a player on a slick
+        // ramp gets a downward pull to slide downhill). Warfork applies gravity
+        // in the air; its slick downhill slide comes from the step-down, but
+        // applying gravity on slick approximates the same net effect for the
+        // defrag ramps this game targets.
         let slick = ps.ground_flags & SURF_SLICK != 0;
         if !ps.on_ground || slick {
             ps.velocity[2] -= GRAVITY * self.frametime;
         }
 
-        // When grounded, clip velocity against the ground plane so the player
-        // stays on the surface. Re-normalize only the HORIZONTAL magnitude
-        // (Q3 `PM_WalkMove` velocity is already horizontal here because no
-        // gravity was applied on ground), so we don't leak the vertical
-        // component back into horizontal speed.
+        // Ground-plane projection: keep the player on the surface by clipping
+        // the velocity against the ground normal. On a descending slope this
+        // redirects horizontal motion into downhill motion.
         if ps.on_ground {
             let n = ps.ground_normal;
             if n[2] > 0.001 {
-                // Project velocity onto the ground plane (remove into-ground).
                 let dot = ps.velocity[0] * n[0] + ps.velocity[1] * n[1] + ps.velocity[2] * n[2];
                 if dot < 0.0 {
                     ps.velocity[0] -= n[0] * dot;
