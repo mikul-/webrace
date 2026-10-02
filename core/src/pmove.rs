@@ -880,9 +880,12 @@ impl Pmove {
             clip_velocity(&mut ps.velocity, tr.normal, OVERCLIP);
         }
 
-        // Reject the step if we didn't actually climb (Q3 keeps whichever move
-        // went farther horizontally; we approximate with a height check).
-        if ps.origin[2] <= start_o[2] + 0.01 {
+        // Reject the step if it didn't move us farther horizontally than the
+        // plain slide did (Q3 compares horizontal distance, not vertical — a
+        // step over a same-height lip advances X without changing Z).
+        let down_dist = (down_o[0] - start_o[0]).powi(2) + (down_o[1] - start_o[1]).powi(2);
+        let up_dist = (ps.origin[0] - start_o[0]).powi(2) + (ps.origin[1] - start_o[1]).powi(2);
+        if down_dist >= up_dist {
             ps.origin = down_o;
             ps.velocity = down_v;
             return;

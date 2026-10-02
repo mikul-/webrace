@@ -97,6 +97,13 @@ impl Session {
 
         let yaw = ps.viewangles[1];
         let race = Race::new(bsp.race_gates.clone());
+        // Initialize the view angles from the spawn yaw (radians) via the
+        // fixed-point conversion, so spawn orientation matches `set_view_rad`
+        // (forward = +X at yaw 0). Putting radians directly into `Angles.yaw`
+        // (a 16-bit fixed-point angle) flips the player 180°, facing them into
+        // the wall behind spawn instead of toward the start line.
+        let mut angles = Angles::default();
+        angles.set_view_rad(yaw, 0.0);
         // The save zone is a generous box around the start gate trigger, but we
         // restrict saving to the "before" side of the start line (the side the
         // spawn is on), so you can't save past it.
@@ -134,7 +141,7 @@ impl Session {
         Ok(Session {
             pmove,
             ps,
-            angles: Angles { yaw, ..Default::default() },
+            angles,
             mouse: MouseConfig::default(),
             held_cmd: Cmd::default(),
             spawn_origin,
