@@ -362,38 +362,31 @@ impl Pmove {
             self.air_move(ps, forward, right, fwd_push, side_push);
         }
 
-        // Gravity. Always applied; the ground-plane clip (below) holds the
-        // player on the floor and redirects the pull into downhill motion on
-        // slopes (which is what slick ramps need for acceleration).
-        ps.velocity[2] -= GRAVITY * self.frametime;
+        // Gravity. Warfork applies it in the air, and on slick ground (so the
+        // player slides down ramps); on normal (non-slick) ground it does NOT
+        // apply gravity — the ground holds the player up and the ground-plane
+        // clip below redirects horizontal motion. Applying it on normal ground
+        // leaks a residual horizontal speed when combined with the clip (the
+        // "keep drifting at 14 ups after stopping" bug).
+        let slick = ps.ground_flags & SURF_SLICK != 0;
+        if !ps.on_ground || slick {
+            ps.velocity[2] -= GRAVITY * self.frametime;
+        }
 
         // When grounded, clip velocity against the ground plane so the player
-        // stays on the surface, then re-normalize to keep full speed (Q3
-        // `PM_WalkMove` lines 790-798) — this is what lets the player glide up
-        // stairs/ledges without losing speed or catching their toe.
+        // stays on the surface. Re-normalize only the HORIZONTAL magnitude
+        // (Q3 `PM_WalkMove` velocity is already horizontal here because no
+        // gravity was applied on ground), so we don't leak the vertical
+        // component back into horizontal speed.
         if ps.on_ground {
             let n = ps.ground_normal;
-            let speed = (ps.velocity[0] * ps.velocity[0]
-                + ps.velocity[1] * ps.velocity[1]
-                + ps.velocity[2] * ps.velocity[2])
-                .sqrt();
-            if speed > 0.0 {
-                clip_velocity(&mut ps.velocity, n, OVERCLIP);
-                let clipped = (ps.velocity[0] * ps.velocity[0]
-                    + ps.velocity[1] * ps.velocity[1]
-                    + ps.velocity[2] * ps.velocity[2])
-                    .sqrt();
-                // If the clip degenerated the velocity to ~zero (e.g. a pure
-                // down-into-ground move that the clip turned into a tiny up
-                // nudge), stop dead instead of re-scaling the epsilon into a
-                // full-speed bounce.
-                if clipped < 0.1 {
-                    ps.velocity[2] = 0.0;
-                } else {
-                    let s = speed / clipped;
-                    ps.velocity[0] *= s;
-                    ps.velocity[1] *= s;
-                    ps.velocity[2] *= s;
+            if n[2] > 0.001 {
+                // Project velocity onto the ground plane (remove into-ground).
+                let dot = ps.velocity[0] * n[0] + ps.velocity[1] * n[1] + ps.velocity[2] * n[2];
+                if dot < 0.0 {
+                    ps.velocity[0] -= n[0] * dot;
+                    ps.velocity[1] -= n[1] * dot;
+                    ps.velocity[2] -= n[2] * dot;
                 }
             }
         }

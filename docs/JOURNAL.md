@@ -148,6 +148,18 @@ reconstruct context without re-deriving it.
      discarded and the player stuck with the blocked slide. Q3 compares
      **horizontal** distance (`down_dist` vs `up_dist`). Fixed to match.
 
+### Gravity-on-ground + residual drift (the "14 ups after stopping" bug)
+- Warfork applies gravity in the **air** and on **slick** ground (to slide down
+  ramps), but NOT on normal ground — the ground clip holds the player and
+  redirects horizontal motion. Our code applied gravity *always*, then clipped +
+  re-normalized the full 3D speed. That leaked the gravity's ~3.4 ups downward
+  component back into horizontal speed, so after releasing the key the player
+  asymptoted to a ~14-up drift instead of stopping.
+- Fix: apply gravity only when airborne or slick; on ground just clip velocity
+  onto the ground plane (no re-normalize, since velocity is already horizontal
+  when gravity isn't applied). The player now stops dead at 0 ups, and the
+  earlier idle bounce is also naturally gone (same root cause).
+
 ### Ledge/gap traversal (getting "stuck on the edge")
 - On slick maps (e.g. rek-dire) sliding over a small gap, the player would catch
   the far ledge's leading edge instead of arcing over it. Two Q3-divergent
