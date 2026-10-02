@@ -761,17 +761,23 @@ impl Pmove {
         }
         let zspeed = ps.velocity[2];
         ps.velocity[2] = 0.0;
+        // `VectorNormalize` in C normalizes in place AND returns the length.
         let speed = (ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1])
             .sqrt();
         if speed == 0.0 {
             ps.velocity[2] = zspeed;
             return;
         }
-        let dot = (ps.velocity[0] / speed) * wishdir[0] + (ps.velocity[1] / speed) * wishdir[1];
+        // Normalize the horizontal velocity direction (unit vector), matching
+        // the C `VectorNormalize` side effect.
+        let vx = ps.velocity[0] / speed;
+        let vy = ps.velocity[1] / speed;
+        let dot = vx * wishdir[0] + vy * wishdir[1];
         let k = 32.0 * PM_AIRCONTROL * dot * dot * self.frametime;
         if dot > 0.0 {
-            ps.velocity[0] = ps.velocity[0] * speed + wishdir[0] * k;
-            ps.velocity[1] = ps.velocity[1] * speed + wishdir[1] * k;
+            // vx/vy are unit-length, so `unit * speed` restores magnitude.
+            ps.velocity[0] = vx * speed + wishdir[0] * k;
+            ps.velocity[1] = vy * speed + wishdir[1] * k;
             let ns = (ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1])
                 .sqrt();
             if ns > 0.0 {

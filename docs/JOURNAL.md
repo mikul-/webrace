@@ -90,6 +90,18 @@ reconstruct context without re-deriving it.
   arrays — keep the length in sync with `brush_plane_count` or collision silently
   drops brushes (a one-element-too-short `brush_contents` cost a wall-dash test).
 
+### Forward-jump speed bug (aircontrol)
+- Holding W + jumping added a spurious ~320 ups on the first airborne tick (the
+  player's speed jumped to ~640 then slowly climbed). Root cause: `aircontrol`
+  ported Warfork's `VectorNormalize`-in-place semantics wrong — the C code
+  normalizes `velocity` first (so `velocity[i]` becomes a *unit* direction) and
+  then does `unit[i] * speed + wishdir[i]*k`, but the Rust port did
+  `velocity[i] * speed` with the *unnormalized* velocity (~320), producing
+  `320*320`, which then re-normalized back to an instant ~320 boost.
+- Fix: normalize the horizontal velocity into a unit `(vx, vy)` first, then use
+  `unit * speed` in the control step. Regression test `forward_jump.rs` locks it
+  in (pre-jump 320 → first-airborne 329.6, a gentle ramp).
+
 ### Jumppad/teleporter trigger geometry fix
 - Trigger volumes were first detected by their **submodel AABB**, which is wrong
   for **diagonal/slanted** jumppads (a "ramp" pad): the AABB is the bounding box
