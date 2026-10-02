@@ -134,6 +134,21 @@ reconstruct context without re-deriving it.
 - Regression test `stairs.rs`: the player climbs three 8-unit steps (z 24 → 48)
   and descends the far side while running, no jumping.
 
+### Ledge/gap traversal (getting "stuck on the edge")
+- On slick maps (e.g. rek-dire) sliding over a small gap, the player would catch
+  the far ledge's leading edge instead of arcing over it. Two Q3-divergent
+  behaviours in our code caused it:
+  1. `grounded()` used a **2.0-unit** down trace; Q3 `PM_GroundTrace` uses
+     **0.25**. The larger tolerance let the player stay "on ground" long after
+     leaving a ledge, so they clipped the far edge horizontally instead of
+     entering a short ballistic dip ("time to fall a few pixels").
+  2. A hand-rolled **anti-float snap-down** (a separate 30-unit trace that
+     yanked the player onto whatever surface was below) actively fought the
+     natural arc. Q3 has no such step; it relies on the ground-plane clip +
+     re-normalize (already added) to stay on surfaces.
+- Fixed both: tightened `grounded()` down trace to 0.25, and deleted the
+  anti-float snap block. Slick ramp / wall-slide / jump tests still pass.
+
 ### Jumppad/teleporter trigger geometry fix
 - Trigger volumes were first detected by their **submodel AABB**, which is wrong
   for **diagonal/slanted** jumppads (a "ramp" pad): the AABB is the bounding box

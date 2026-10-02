@@ -163,7 +163,11 @@ impl Pmove {
             return false;
         }
 
-        let down = 2.0;
+        // Q3 `PM_GroundTrace` uses a 0.25-unit down trace to decide ground
+        // contact; a larger tolerance makes the player "stick" to a ledge too
+        // long when crossing a gap, so they clip the far ledge's edge instead
+        // of arcing down onto it.
+        let down = 0.25;
         let start = ps.origin;
         let end = [ps.origin[0], ps.origin[1], ps.origin[2] - down];
         let tr = self.world.trace(
@@ -400,31 +404,6 @@ impl Pmove {
 
         // Triggers: teleporters move the player; jumppads launch them.
         self.check_triggers(ps);
-
-        // Anti-float: if grounded, keep the feet pinned to the ground plane so
-        // the slide/epsilon at angled seams cannot drift the player upward.
-        if ps.on_ground {
-            let n = ps.ground_normal;
-            // Distance of the box bottom (feet) to the plane, via box center.
-            // The box center is ps.origin + center_off; feet are at
-            // origin[2] - 24. We trace down a short distance and snap.
-            let start = ps.origin;
-            let end = [start[0], start[1], start[2] - 30.0];
-            let tr = self.world.trace(start, self.mins, self.maxs, end);
-            if tr.fraction < 1.0 && tr.normal[2] > 0.7 {
-                let surface_z = start[2] - 30.0 * tr.fraction;
-                // Feet rest on the surface: origin[2] - 24 = surface_z
-                // (feet offset is -24 regardless of crouch, since mins.z = -24).
-                let target_z = surface_z + 24.0;
-                if ps.origin[2] > target_z {
-                    ps.origin[2] = target_z;
-                    if ps.velocity[2] < 0.0 {
-                        ps.velocity[2] = 0.0;
-                    }
-                }
-            }
-            let _ = n;
-        }
         let _ = up_push;
         let _ = up;
     }
