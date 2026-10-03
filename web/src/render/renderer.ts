@@ -24,6 +24,10 @@ export interface MoverChunk extends DrawChunk {
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
+/** Texture filtering quality (maps to min/mag filters + mipmaps + anisotropy). */
+export type TextureMode = "nearest" | "bilinear" | "trilinear" | "anisotropic";
+export const TEXTURE_MODES: TextureMode[] = ["nearest", "bilinear", "trilinear", "anisotropic"];
+
 export class Renderer {
   gl: WebGL2RenderingContext;
   private program: WebGLProgram;
@@ -31,11 +35,20 @@ export class Renderer {
   private vbo: WebGLBuffer;
   private ibo: WebGLBuffer;
   private indexCount = 0;
+  // Wireframe: a second VAO per mesh sharing the vertex buffer but using a
+  // line-index buffer (WebGL2 has no polygon mode). Line indices are exactly
+  // 2x the triangle indices in the same order, so chunk ranges scale by 2.
+  private wireIbo: WebGLBuffer;
+  private wireVao: WebGLVertexArrayObject;
+  private wireIndexCount = 0;
+  private wireframe = false;
   // Moving brush entities use a second vertex/index buffer so each mover can be
   // drawn with its own model matrix.
   private moverVao: WebGLVertexArrayObject | null = null;
   private moverVbo: WebGLBuffer | null = null;
   private moverIbo: WebGLBuffer | null = null;
+  private moverWireIbo: WebGLBuffer | null = null;
+  private moverWireVao: WebGLVertexArrayObject | null = null;
   private moverIndexCount = 0;
   private moverChunks: MoverChunk[] = [];
   private uProjView: WebGLUniformLocation;
@@ -44,6 +57,7 @@ export class Renderer {
   private uLit: WebGLUniformLocation;
   private uScroll: WebGLUniformLocation;
   private uTime: WebGLUniformLocation;
+  private uWire: WebGLUniformLocation;
   // Overlay (FX) program.
   private fxProgram: WebGLProgram;
   private fxProjView: WebGLUniformLocation;
@@ -54,6 +68,14 @@ export class Renderer {
   private whiteTex: WebGLTexture;
   private textures: Map<number, WebGLTexture>;
   private texCount: number;
+  /** Texture filtering quality + anisotropic filtering capability. */
+  private textureMode: TextureMode = "anisotropic";
+  private anisoExt: {
+    TEXTURE_MAX_ANISOTROPY_EXT: number;
+    MAX_TEXTURE_MAX_ANISOTROPY_EXT: number;
+  } | null = null;
+  private anisoMax = 1;
+  private anisoLevel = 8;
   /** Draw chunks: base pass + additive/blended overlays. */
   private chunks: DrawChunk[] = [];
 
@@ -78,6 +100,16 @@ export class Renderer {
     if (!gl) throw new Error("WebGL2 not supported");
     this.gl = gl;
 
+    // Anisotropic filtering (optional; falls back to trilinear if unsupported).
+    const aniso = gl.getExtension("EXT_texture_filter_anisotropic") as {
+      TEXTURE_MAX_ANISOTROPY_EXT: number;
+      MAX_TEXTURE_MAX_ANISOTROPY_EXT: number;
+    } | null;
+    this.anisoExt = aniso;
+    if (aniso) {
+      this.anisoMax = gl.getParameter(aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT) as number;
+    }
+
     const vs = `#version 300 es
       layout(location=0) in vec3 a_pos;
       layout(location=1) in vec2 a_uv;
@@ -98,10 +130,16 @@ export class Renderer {
       uniform sampler2D u_lightmap;
       uniform float u_has_texture;
       uniform float u_lit;
+      uniform float u_wire;
       uniform vec2 u_scroll;
       uniform float u_time;
       out vec4 outColor;
       void main() {
+        // Wireframe debug: flat bright lines, ignore texture/lightmap.
+        if (u_wire > 0.5) {
+          outColor = vec4(0.20, 1.0, 0.40, 1.0);
+          return;
+        }
         vec4 tex = texture(u_texture, v_uv + u_scroll * u_time);
         // Surface albedo (from texture) or a neutral gray fallback.
         vec3 albedo = mix(vec3(0.62), tex.rgb, u_has_texture);
@@ -126,6 +164,7 @@ export class Renderer {
     this.uLit = gl.getUniformLocation(this.program, "u_lit")!;
     this.uScroll = gl.getUniformLocation(this.program, "u_scroll")!;
     this.uTime = gl.getUniformLocation(this.program, "u_time")!;
+    this.uWire = gl.getUniformLocation(this.program, "u_wire")!;
     const uLightmap = gl.getUniformLocation(this.program, "u_lightmap");
     const uTexture = gl.getUniformLocation(this.program, "u_texture");
     if (uLightmap) gl.uniform1i(uLightmap, 0);
@@ -163,11 +202,13 @@ export class Renderer {
     if (fxTex) gl.uniform1i(fxTex, 1);
     gl.useProgram(this.program);
 
-    // Lightmap atlas texture (unit 0).
+    // Lightmap atlas texture (unit 0). Kept unfiltered-by-mode and without
+    // mipmaps: the atlas is a grid of independent cells, so mips would bleed
+    // light between them. CLAMP avoids sampling past the atlas edge.
     this.lightmapTex = gl.createTexture()!;
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.lightmapTex);
-    setTexParams(gl);
+    this.configureLightmap();
 
     // Texture cache (unit 1): shader-index -> WebGLTexture.
     this.textures = new Map();
@@ -177,16 +218,38 @@ export class Renderer {
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.whiteTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([158, 158, 158, 255]));
+    gl.generateMipmap(gl.TEXTURE_2D);
+    this.configureTex();
 
     this.vao = gl.createVertexArray()!;
     this.vbo = gl.createBuffer()!;
     this.ibo = gl.createBuffer()!;
+    this.wireIbo = gl.createBuffer()!;
+    this.wireVao = gl.createVertexArray()!;
 
     gl.bindVertexArray(this.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.ibo);
+    this.setupAttribs();
+    gl.bindVertexArray(null);
 
-    // interleaved: 14 floats = pos(3) uv(2) lm(2) normal(3) color(4)
+    gl.bindVertexArray(this.wireVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.wireIbo);
+    this.setupAttribs();
+    gl.bindVertexArray(null);
+
+    gl.enable(gl.DEPTH_TEST);
+    // Culling disabled for now: the q2t reflection may flip winding, and
+    // Quake BSP front-face convention differs from WebGL's default. Re-enable
+    // once winding is verified.
+    // gl.enable(gl.CULL_FACE);
+    gl.clearColor(0.04, 0.05, 0.07, 1);
+  }
+
+  /** Set the interleaved 14-float vertex attributes on the bound VAO. */
+  private setupAttribs() {
+    const gl = this.gl;
     const stride = 14 * 4;
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, stride, 0);
@@ -198,13 +261,14 @@ export class Renderer {
     gl.vertexAttribPointer(3, 3, gl.FLOAT, false, stride, 28);
     gl.enableVertexAttribArray(4);
     gl.vertexAttribPointer(4, 4, gl.FLOAT, false, stride, 40);
+  }
 
-    gl.enable(gl.DEPTH_TEST);
-    // Culling disabled for now: the q2t reflection may flip winding, and
-    // Quake BSP front-face convention differs from WebGL's default. Re-enable
-    // once winding is verified.
-    // gl.enable(gl.CULL_FACE);
-    gl.clearColor(0.04, 0.05, 0.07, 1);
+  /** Enable/disable wireframe (debug) rendering. */
+  setWireframe(on: boolean) {
+    this.wireframe = on;
+  }
+  isWireframe(): boolean {
+    return this.wireframe;
   }
 
   private link(vs: string, fs: string): WebGLProgram {
@@ -245,6 +309,20 @@ export class Renderer {
     const idx = new Uint32Array(memory.buffer, idxPtr, idxCount);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
     this.indexCount = idxCount;
+
+    // Wireframe line indices (2x the triangle indices, emitted in the same
+    // order so every triangle range maps to `[first*2, count*2)`). Bind the
+    // line VAO *before* touching the line IBO, otherwise the element-buffer
+    // binding would be recorded into `this.vao` and normal draws would use the
+    // line indices.
+    const lines = buildLineIndices(idx);
+    gl.bindVertexArray(this.wireVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.wireIbo);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, lines, gl.STATIC_DRAW);
+    this.setupAttribs();
+    this.wireIndexCount = lines.length;
+    gl.bindVertexArray(null);
   }
 
   /**
@@ -263,6 +341,8 @@ export class Renderer {
       this.moverVao = gl.createVertexArray();
       this.moverVbo = gl.createBuffer();
       this.moverIbo = gl.createBuffer();
+      this.moverWireIbo = gl.createBuffer();
+      this.moverWireVao = gl.createVertexArray();
     }
     if (idxCount === 0 || vertCount === 0) {
       this.moverIndexCount = 0;
@@ -275,18 +355,17 @@ export class Renderer {
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.moverIbo);
     const idx = new Uint32Array(memory.buffer, idxPtr, idxCount);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
-    const stride = 14 * 4;
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, stride, 0);
-    gl.enableVertexAttribArray(1);
-    gl.vertexAttribPointer(1, 2, gl.FLOAT, false, stride, 12);
-    gl.enableVertexAttribArray(2);
-    gl.vertexAttribPointer(2, 2, gl.FLOAT, false, stride, 20);
-    gl.enableVertexAttribArray(3);
-    gl.vertexAttribPointer(3, 3, gl.FLOAT, false, stride, 28);
-    gl.enableVertexAttribArray(4);
-    gl.vertexAttribPointer(4, 4, gl.FLOAT, false, stride, 40);
+    this.setupAttribs();
     this.moverIndexCount = idxCount;
+
+    const lines = buildLineIndices(idx);
+    // Bind the wire VAO before the wire IBO so `moverVao` keeps its triangle IBO.
+    gl.bindVertexArray(this.moverWireVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.moverVbo);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.moverWireIbo);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, lines, gl.STATIC_DRAW);
+    this.setupAttribs();
+    gl.bindVertexArray(null);
   }
 
   /** Set the mover draw chunks (each references a mover index for its matrix). */
@@ -414,13 +493,15 @@ export class Renderer {
     gl.bindVertexArray(null);
 
     // Textures (one per face).
+    gl.activeTexture(gl.TEXTURE2);
     this.skyFaceTextures = faces.map((img) => {
       if (!img) return null;
       const tex = gl.createTexture()!;
       gl.bindTexture(gl.TEXTURE_2D, tex);
-      setTexParams(gl);
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, img.width, img.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, img.data);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      this.configureTex();
       return tex;
     });
   }
@@ -461,11 +542,71 @@ export class Renderer {
     const id = this.texCount++;
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    setTexParams(gl);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, img.width, img.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, img.data);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    this.configureTex();
     this.textures.set(id, tex);
     return id;
+  }
+
+  /** Set the texture filtering mode and re-apply it to every loaded texture. */
+  setTextureMode(mode: TextureMode) {
+    this.textureMode = mode;
+    this.applyTextureMode();
+  }
+
+  /** Whether anisotropic filtering is available on this GPU. */
+  anisoAvailable(): boolean {
+    return this.anisoExt !== null && this.anisoMax > 1;
+  }
+
+  /** Re-apply the current texture filter mode to every loaded world/sky texture. */
+  private applyTextureMode() {
+    const gl = this.gl;
+    // Use unit 1 so we don't clobber the lightmap binding on unit 0.
+    gl.activeTexture(gl.TEXTURE1);
+    for (const tex of this.textures.values()) {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      this.configureTex();
+    }
+    gl.bindTexture(gl.TEXTURE_2D, this.whiteTex);
+    this.configureTex();
+    for (const tex of this.skyFaceTextures) {
+      if (!tex) continue;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      this.configureTex();
+    }
+  }
+
+  /** Apply the current filter mode + anisotropy to the bound texture. */
+  private configureTex() {
+    const gl = this.gl;
+    const mode = this.textureMode;
+    const mag = mode === "nearest" ? gl.NEAREST : gl.LINEAR;
+    const min =
+      mode === "nearest"
+        ? gl.NEAREST
+        : mode === "bilinear"
+          ? gl.LINEAR
+          : gl.LINEAR_MIPMAP_LINEAR; // trilinear / anisotropic
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, min);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, mag);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    if (this.anisoExt) {
+      const level = mode === "anisotropic" ? Math.min(this.anisoLevel, this.anisoMax) : 1;
+      gl.texParameterf(gl.TEXTURE_2D, this.anisoExt.TEXTURE_MAX_ANISOTROPY_EXT, level);
+    }
+  }
+
+  /** Fixed filtering for the lightmap atlas (no mips, no mode/aniso). */
+  private configureLightmap() {
+    const gl = this.gl;
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
 
   draw(
@@ -476,10 +617,13 @@ export class Renderer {
   ) {
     const gl = this.gl;
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    // Skybox first: it writes depth far away, so the world draws over it.
-    this.drawSkybox(projView, eye);
+    // Skybox first: it writes depth far away, so the world draws over it. Skip
+    // it in wireframe so the lines stand out against the dark clear color.
+    if (!this.wireframe) this.drawSkybox(projView, eye);
     if (this.indexCount === 0 && this.moverIndexCount === 0) return;
-    gl.bindVertexArray(this.vao);
+    const wire = this.wireframe;
+    const primitive = wire ? gl.LINES : gl.TRIANGLES;
+    gl.bindVertexArray(wire ? this.wireVao : this.vao);
 
     if (this.chunks.length === 0) {
       gl.useProgram(this.program);
@@ -487,23 +631,29 @@ export class Renderer {
       gl.uniformMatrix4fv(this.uModel, false, IDENTITY);
       gl.uniform1f(this.uHasTexture, 0);
       gl.uniform1f(this.uLit, 1);
+      gl.uniform1f(this.uWire, wire ? 1 : 0);
       gl.uniform2f(this.uScroll, 0, 0);
       gl.uniform1f(this.uTime, time);
       this.setBlend("opaque");
-      gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_INT, 0);
+      gl.drawElements(
+        primitive,
+        wire ? this.wireIndexCount : this.indexCount,
+        gl.UNSIGNED_INT,
+        0,
+      );
     } else {
       for (const c of this.chunks) {
-        this.drawChunkBody(c, projView, time, IDENTITY);
+        this.drawChunkBody(c, projView, time, IDENTITY, primitive);
       }
     }
 
     // Moving brush entities, drawn from their own buffer with a per-mover
     // model matrix.
     if (this.moverVao && this.moverIndexCount > 0 && this.moverChunks.length > 0) {
-      gl.bindVertexArray(this.moverVao);
+      gl.bindVertexArray(wire ? this.moverWireVao : this.moverVao);
       for (const c of this.moverChunks) {
         const model = moverMatrices[c.model] ?? IDENTITY;
-        this.drawChunkBody(c, projView, time, model);
+        this.drawChunkBody(c, projView, time, model, primitive);
       }
     }
 
@@ -512,12 +662,20 @@ export class Renderer {
   }
 
   /** Draw one chunk's base pass plus overlay passes with the given model matrix. */
-  private drawChunkBody(c: DrawChunk, projView: Float32Array, time: number, model: Float32Array) {
+  private drawChunkBody(
+    c: DrawChunk,
+    projView: Float32Array,
+    time: number,
+    model: Float32Array,
+    primitive: number,
+  ) {
     const gl = this.gl;
+    const wire = this.wireframe;
     // Base pass.
     gl.useProgram(this.program);
     gl.uniformMatrix4fv(this.uProjView, false, projView);
     gl.uniformMatrix4fv(this.uModel, false, model);
+    gl.uniform1f(this.uWire, wire ? 1 : 0);
     const baseId = this.pickAnim(c.tex, c.animFreq, time);
     const baseTex = baseId !== null ? this.textures.get(baseId) : undefined;
     if (baseTex) {
@@ -530,10 +688,15 @@ export class Renderer {
     gl.uniform1f(this.uLit, c.lit ? 1 : 0);
     gl.uniform2f(this.uScroll, c.scroll[0], c.scroll[1]);
     gl.uniform1f(this.uTime, time);
-    this.setBlend(c.blend);
-    gl.drawElements(gl.TRIANGLES, c.count, gl.UNSIGNED_INT, c.first * 4);
+    this.setBlend(wire ? "opaque" : c.blend);
+    // In wireframe the bound IBO is the line buffer, whose range is 2x the
+    // triangle range in the same order.
+    const first = wire ? c.first * 2 : c.first;
+    const count = wire ? c.count * 2 : c.count;
+    gl.drawElements(primitive, count, gl.UNSIGNED_INT, first * 4);
 
-    // Overlay passes (additive / blended / multiply).
+    // Overlay passes (additive / blended / multiply). Skipped in wireframe.
+    if (wire) return;
     for (const o of c.overlays) {
       const otex = this.textures.get(o.tex);
       if (!otex) continue;
@@ -550,11 +713,22 @@ export class Renderer {
   }
 }
 
-function setTexParams(gl: WebGL2RenderingContext) {
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+/** Build a `gl.LINES` index buffer (3 edges per triangle) from triangle indices. */
+function buildLineIndices(tris: Uint32Array): Uint32Array {
+  const lines = new Uint32Array((tris.length / 3) * 6);
+  let o = 0;
+  for (let i = 0; i + 2 < tris.length; i += 3) {
+    const a = tris[i];
+    const b = tris[i + 1];
+    const c = tris[i + 2];
+    lines[o++] = a;
+    lines[o++] = b;
+    lines[o++] = b;
+    lines[o++] = c;
+    lines[o++] = c;
+    lines[o++] = a;
+  }
+  return lines;
 }
 
 // 4x4 matrix helpers (column-major floats). Kept minimal and inlined.

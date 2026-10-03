@@ -5,6 +5,7 @@ import { Settings, saveSettings, loadSettings, encodeConfig, decodeConfig } from
 import { fetchLeaderboard, getIdentity } from "../net/leaderboard";
 import { ACTIONS, BindMap, displayCode } from "../binds";
 import { SOUND_EVENTS } from "../audio";
+import type { TextureMode } from "../render/renderer";
 import {
   MapInfo,
   getCatalog,
@@ -30,6 +31,8 @@ export interface SettingsCallbacks {
   onSensitivity: (sens: number) => void;
   onBinds: (binds: BindMap) => void;
   onPlayMap: (map: string) => void;
+  /** Texture filtering quality changed. */
+  onTextureMode: (mode: TextureMode) => void;
   /** Sound assignment (event id -> file name) changed. */
   onSounds: (sounds: Record<string, string>) => void;
   /** Master sound volume changed (0..1). */
@@ -53,6 +56,7 @@ export class Menu {
   private xhairSize: HTMLInputElement;
   private xhairSizeValue: HTMLElement;
   private xhairEl: HTMLElement;
+  private textureModeSelect: HTMLSelectElement;
   private leaderboardEl: HTMLElement;
   private bindsEl: HTMLElement;
   private lbMapInput: HTMLInputElement;
@@ -96,6 +100,7 @@ export class Menu {
     this.xhairSize = document.getElementById("xhair-size") as HTMLInputElement;
     this.xhairSizeValue = document.getElementById("xhair-size-value")!;
     this.xhairEl = document.getElementById("crosshair")!;
+    this.textureModeSelect = document.getElementById("texture-mode") as HTMLSelectElement;
     this.leaderboardEl = document.getElementById("leaderboard")!;
     this.bindsEl = document.getElementById("binds")!;
     this.lbMapInput = document.getElementById("lb-map-input") as HTMLInputElement;
@@ -439,6 +444,11 @@ export class Menu {
     // Crosshair size
     this.xhairSize.addEventListener("input", () => this.setCrosshairSize(Number(this.xhairSize.value)));
 
+    // Texture filtering quality
+    this.textureModeSelect.addEventListener("change", () =>
+      this.setTextureMode(this.textureModeSelect.value as TextureMode),
+    );
+
     // Master sound volume
     this.volumeSlider.addEventListener("input", () => this.setVolume(Number(this.volumeSlider.value)));
   }
@@ -475,6 +485,12 @@ export class Menu {
     this.save();
   }
 
+  private setTextureMode(mode: TextureMode) {
+    this.settings.textureMode = mode;
+    this.cb.onTextureMode(mode);
+    this.save();
+  }
+
   private setVolume(v: number) {
     const clamped = Math.min(1, Math.max(0, v));
     this.settings.volume = clamped;
@@ -507,6 +523,9 @@ export class Menu {
     this.xhairSizeValue.textContent = `${this.settings.crosshairSize}px`;
     this.xhairEl.style.width = `${this.settings.crosshairSize}px`;
     this.xhairEl.style.height = `${this.settings.crosshairSize}px`;
+
+    this.textureModeSelect.value = this.settings.textureMode;
+    this.cb.onTextureMode(this.settings.textureMode);
 
     const volume = Math.min(1, Math.max(0, this.settings.volume ?? 0.8));
     this.volumeSlider.value = String(volume);

@@ -67,6 +67,15 @@ reconstruct context without re-deriving it.
   `core/src/lib.rs`) for jump/dash/walljump/land/footstep/jumppad/teleport and
   `main.ts` plays the assigned file. Weapon sounds are assignable now but fire
   once weapons exist.
+- **Debug wireframe**: press **P** (rebindable; also `?wire=1`) to toggle a
+  green edge-only view of the world + movers. WebGL2 has no polygon mode, so the
+  renderer builds a `gl.LINES` index buffer (2× the triangle indices, same order)
+  and swaps to a line VAO; skybox/overlays are skipped.
+- **Texture filtering**: mipmaps are generated for every world/sky texture and
+  the default mode is trilinear + anisotropic (8×) when the extension is
+  available. `Settings → Texture filtering` selects Nearest / Bilinear /
+  Trilinear / Trilinear+aniso at runtime. The lightmap atlas is excluded (no
+  mips, CLAMP) so light doesn't bleed between atlas cells.
 
 ### Stubbed / not yet built
 - **Shaders** (`.shader` scripts) — skybox, animated (`animmap`), additive
@@ -375,6 +384,40 @@ Implemented. Summary / where it lives:
 - **Deploy gotcha**: if `snd/` ever ships, Caddy needs `/webrace/sounds` and
   `/webrace/snd/*` → `192.168.0.107:4173` proxy rules (added to the reference
   `deploy/Caddyfile`; must be applied to the live Caddyfile like the shader rule).
+
+### Debug wireframe (WebGL2 has no `glPolygonMode`)
+- The renderer keeps a second VAO per mesh (world + movers) that shares the same
+  vertex buffer but uses a `gl.LINES` index buffer built from the triangle IBO
+  (3 edges per triangle, in order). Because the line buffer is exactly 2× the
+  triangle IBO in the same order, a triangle chunk `[first, count)` maps to line
+  `[first*2, count*2)` — no per-chunk bookkeeping.
+- The base fragment shader gained `u_wire` (flat bright green, early return);
+  skybox and overlay passes are skipped while wireframe is on. Toggled by the
+  rebindable `wireframe` action (default **P**) and by `?wire=1` on the URL.
+- Verified headlessly by wrapping `drawElements` and counting modes: with
+  `?wire=1` the frame is all `LINES` (0 `TRIANGLES`), and pressing `P` flips it
+  back to `TRIANGLES`.
+
+### Texture filtering (mipmaps + anisotropy)
+- The first pass used `MIN_FILTER = LINEAR` with **no `generateMipmap`**, so
+  minified surfaces (distance / grazing angles) sampled the full-res texture and
+  shimmered. `MAG_FILTER = LINEAR`, wrap `REPEAT`.
+- Fix: generate mipmaps on every world/sky/white texture after upload and use
+  `MIN_FILTER = LINEAR_MIPMAP_LINEAR` (trilinear). Anisotropic filtering
+  (`EXT_texture_filter_anisotropic`, 8×) is enabled when available. Mode is
+  switchable at runtime via `Settings → Texture filtering`
+  (`Settings.textureMode`: nearest / bilinear / trilinear / anisotropic), which
+  re-applies `texParameteri` to every cached texture (no re-upload).
+- The **lightmap atlas is excluded** (fixed `LINEAR`, `CLAMP_TO_EDGE`, no mips) —
+  mipmapping an atlas grid bleeds light between cells.
+- Gotcha: applying filters binds textures; do it on **unit 1**, never unit 0,
+  because the lightmap is bound to unit 0 once and never rebound per frame.
+- Gotcha: the 1×1 fallback white texture still needs mipmaps (or a
+  non-mipmap min filter), otherwise a mipmap min filter makes it incomplete.
+- Verified by wrapping `generateMipmap`/`texParameteri`/`texParameterf` in
+  headless Chromium: 10 mipmap generations, world/sky textures get
+  `LINEAR_MIPMAP_LINEAR`, aniso applied, and switching to Bilinear re-applies
+  `LINEAR` to all cached textures.
 
 ### Smooth crouch transition (Warfork `PM_AdjustBBox`)
 - Crouch was instantaneous (box snapped 40 -> 16). Ported Warfork's transition:

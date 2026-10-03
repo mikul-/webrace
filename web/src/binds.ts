@@ -15,7 +15,8 @@ export type Action =
   | "attack"
   | "restart"
   | "menu"
-  | "position_save";
+  | "position_save"
+  | "wireframe";
 
 export interface BindMap {
   [action: string]: string; // input code -> action
@@ -33,6 +34,7 @@ export const ACTIONS: { id: Action; label: string }[] = [
   { id: "restart", label: "restart race" },
   { id: "menu", label: "open menu" },
   { id: "position_save", label: "save position" },
+  { id: "wireframe", label: "toggle wireframe (debug)" },
 ];
 
 export const DEFAULT_BINDS: BindMap = {
@@ -52,6 +54,7 @@ export const DEFAULT_BINDS: BindMap = {
   Mouse3: "position_save",
   Digit4: "restart",
   Escape: "menu",
+  KeyP: "wireframe",
 };
 
 /** Mouse button index -> event.button mapping. */

@@ -302,6 +302,18 @@
         cursor: pointer;
         padding: 0;
       }
+      .menu-group select {
+        flex: 1;
+        background: #11141c;
+        border: 1px solid #2a3040;
+        color: #cfd4dd;
+        padding: 5px 8px;
+        font: inherit;
+      }
+      .menu-group select:focus {
+        border-color: #fa00ff;
+        outline: none;
+      }
       .lb-controls {
         display: flex;
         gap: 8px;
@@ -675,6 +687,17 @@
           <label>Crosshair size <span id="xhair-size-value" class="val"></span></label>
           <div class="row">
             <input type="range" id="xhair-size" min="4" max="64" step="1" />
+          </div>
+        </div>
+        <div class="menu-group">
+          <label>Texture filtering</label>
+          <div class="row">
+            <select id="texture-mode">
+              <option value="nearest">Nearest (retro, aliased)</option>
+              <option value="bilinear">Bilinear</option>
+              <option value="trilinear">Trilinear (mipmaps)</option>
+              <option value="anisotropic">Trilinear + anisotropic</option>
+            </select>
           </div>
         </div>
         <div class="page-title">Key binds</div>

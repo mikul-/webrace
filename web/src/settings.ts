@@ -1,6 +1,7 @@
 // Client settings (persisted to localStorage).
 
 import { BindMap, DEFAULT_BINDS } from "./binds";
+import type { TextureMode } from "./render/renderer";
 
 export interface Settings {
   fov: number;
@@ -8,6 +9,8 @@ export interface Settings {
   crosshairColor: string;
   crosshairSize: number;
   binds: BindMap;
+  /** Texture filtering quality. */
+  textureMode: TextureMode;
   /** Master sound volume, 0..1. */
   volume: number;
   /** Sound event id -> file name under `snd/` (or absent for none). */
@@ -18,6 +21,8 @@ export interface Settings {
 
 const KEY = "webrace.settings";
 
+const TEXTURE_MODES: TextureMode[] = ["nearest", "bilinear", "trilinear", "anisotropic"];
+
 /** Bump to force the defaults below onto existing installs (one time). */
 const SOUND_VERSION = 3;
 
@@ -27,6 +32,7 @@ const DEFAULTS: Settings = {
   crosshairColor: "#fa00ff",
   crosshairSize: 18,
   binds: { ...DEFAULT_BINDS },
+  textureMode: "anisotropic",
   volume: 0.8,
   sounds: {
     jump: "FS Ground Civilian Walk N05.wav",
@@ -59,6 +65,12 @@ export function loadSettings(): Settings {
             ? parsed.crosshairColor
             : DEFAULTS.crosshairColor;
         s.crosshairSize = clamp(Number(parsed.crosshairSize) || DEFAULTS.crosshairSize, 4, 64);
+        if (
+          typeof parsed.textureMode === "string" &&
+          (TEXTURE_MODES as string[]).includes(parsed.textureMode)
+        ) {
+          s.textureMode = parsed.textureMode as TextureMode;
+        }
         s.volume =
           typeof parsed.volume === "number" ? clamp(parsed.volume, 0, 1) : DEFAULTS.volume;
         if (parsed.binds && typeof parsed.binds === "object") {

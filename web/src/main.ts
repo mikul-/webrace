@@ -4,7 +4,7 @@
 // Milestone 2: playable movement. Multiplayer + weapons wire in later.
 
 import { Renderer, perspective, lookAt, multiply } from "./render/renderer";
-import type { MoverChunk } from "./render/renderer";
+import type { MoverChunk, TextureMode } from "./render/renderer";
 import { fetchBsp } from "./sim/map";
 import { api } from "./base";
 import { loadTexture } from "./render/textures";
@@ -39,6 +39,8 @@ let sessionId: number | null = null;
 let currentMap = "";
 let submitGuard = false; // true once we've submitted the current finish
 let fov = 140; // horizontal FOV (updated by the settings menu)
+let wireframe = false; // debug wireframe rendering
+let textureMode: TextureMode = "anisotropic"; // texture filtering quality
 let menu: Menu | null = null;
 let binds: BindMap = { ...DEFAULT_BINDS };
 let actionByCode = codeToAction(binds);
@@ -97,6 +99,10 @@ async function main() {
         },
         onSounds: (sounds) => audio.setAssignments(sounds),
         onVolume: (volume) => audio.setVolume(volume),
+        onTextureMode: (mode) => {
+          textureMode = mode;
+          renderer?.setTextureMode(mode);
+        },
         onPlaySound: (file) => audio.playFile(file),
         onListSounds: () => audio.listFiles(),
       },
@@ -114,7 +120,12 @@ async function main() {
     const existing = getIdentity();
     if (existing) nicknameInput.value = existing.nickname;
 
-    const q = new URLSearchParams(location.search).get("map");
+    // `?wire=1` starts in debug wireframe mode (before the map/renderer loads).
+    const params = new URLSearchParams(location.search);
+    const wire = params.get("wire");
+    if (wire === "1" || wire === "true") wireframe = true;
+
+    const q = params.get("map");
     if (q) {
       mapInput.value = q;
       void loadMap();
@@ -155,6 +166,8 @@ async function loadMap(explicitName?: string) {
       renderer = new Renderer(canvas);
       setupResize();
     }
+    renderer.setWireframe(wireframe);
+    renderer.setTextureMode(textureMode);
 
     renderer.uploadMap(
       memory,
@@ -439,9 +452,19 @@ function dispatchAction(action: Action): void {
     case "position_save":
       if (sessionId !== null) core.session_position_save(sessionId);
       break;
+    case "wireframe":
+      toggleWireframe();
+      break;
     default:
       break;
   }
+}
+
+/** Toggle debug wireframe rendering (also available via `?wire=1`). */
+function toggleWireframe() {
+  wireframe = !wireframe;
+  renderer?.setWireframe(wireframe);
+  log(`wireframe ${wireframe ? "ON" : "OFF"}`);
 }
 
 // True when the event target is a text input/textarea/contenteditable (so we
