@@ -358,6 +358,16 @@ export class Renderer {
     });
   }
 
+  /** Remove any skybox (e.g. when loading a map that has none). */
+  clearSkybox() {
+    const gl = this.gl;
+    for (const t of this.skyFaceTextures) {
+      if (t) gl.deleteTexture(t);
+    }
+    this.skyFaceTextures = [];
+    this.skyRanges = [];
+  }
+
   private drawSkybox(projView: Float32Array, eye: [number, number, number]) {
     if (!this.skyProgram || this.skyRanges.length === 0) return;
     const gl = this.gl;

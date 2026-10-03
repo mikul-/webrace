@@ -238,7 +238,9 @@ async function loadMap(explicitName?: string) {
     }
     renderer.setChunks(chunks);
 
-    // Skybox: resolve the map's sky shader (SURF_SKY) and its `skyparms` faces.
+    // Skybox: clear any previous one (the new map may have none), then resolve
+    // this map's sky shader (SURF_SKY) and its `skyparms` faces.
+    renderer.clearSkybox();
     void loadSkybox(mapId)
       .then((faces) => {
         if (faces) renderer!.setSkybox(faces);
