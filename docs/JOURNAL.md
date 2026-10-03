@@ -148,6 +148,27 @@ reconstruct context without re-deriving it.
      discarded and the player stuck with the blocked slide. Q3 compares
      **horizontal** distance (`down_dist` vs `up_dist`). Fixed to match.
 
+### Faithful Warfork walljump (`PM_CheckWallJump`) + 0.25 ground trace
+- Our old walljump was a custom "wall-dash" that *reflected* the horizontal
+  velocity (`v - 2(v·n)n`), giving the wrong angle and losing speed. Warfork's
+  `PM_CheckWallJump` does something different:
+  1. Finds the nearest wall via `PlayerTouchWall(12, 0.3)` — 12 directions in a
+     circle, flat hull, picks the nearest with `|normal.z| < 0.3`.
+  2. Zeroes `velocity[2]`, `hspeed = VectorNormalize2D(velocity)`.
+  3. `GS_ClipVelocity(velocity, normal, 1.0005)` (a *slide*, not a reflection).
+  4. `velocity += 0.3 * normal` (bounce factor pushes off the wall).
+  5. Clamp `hspeed` to `pm_wjminspeed = (walk + runSpeed)/2 = 240`.
+  6. Renormalize the 3D velocity and scale back to `hspeed`.
+  7. `velocity[2] = max(oldup, pm_wjupspeed)`.
+  This preserves entry horizontal speed (verified: fly into a wall at 700 ups →
+  exit at 700) and reproduces Warfork's walljump angle. Order is now Warfork's:
+  jump → dash → walljump.
+- `grounded()` down-trace lowered from **2.0 → 0.25** (Warfork
+  `PM_CategorizePosition`). With the faithful slide/step now in place this no
+  longer breaks descent, and it lets the player leave a down-slope sooner so
+  gravity accelerates them (down-ramp speed). Steeper ramps now clearly gain
+  speed (nz 0.6 → ~393 ups).
+
 ### Faithful Warfork `PM_SlideMove` + `PM_StepSlideMove` port (ramp slide)
 - Replaced our Q3-hybrid slide/step with a **faithful port of Warfork**:
   - `slide_clip` = `PM_SlideMove` (no ground-plane pre-seed; zeroes downward

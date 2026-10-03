@@ -66,3 +66,31 @@ fn wall_dash_pushes_away_and_up() {
     assert!(ps.velocity[0] > 0.0, "push away +X, got vx={}", ps.velocity[0]);
     assert!(ps.velocity[2] > 100.0, "upward speed, got vz={}", ps.velocity[2]);
 }
+
+/// Warfork's walljump preserves the entry horizontal speed (it clips the
+/// direction and scales back to `hspeed`). Flying into a wall at 700 ups should
+/// exit at ~700 ups, not lose 40-60.
+#[test]
+fn walljump_preserves_horizontal_speed() {
+    let mut pmove = Pmove::new(wall_world(), 1.0 / 250.0);
+    let mut ps = PlayerState::default();
+    ps.origin = [300.0, 0.0, 0.0]; // far from the wall, airborne
+    ps.viewangles = [0.0, std::f32::consts::PI, 0.0]; // facing -X (at the wall)
+    ps.velocity = [-700.0, 0.0, 0.0]; // flying at the wall at 700 ups
+    ps.on_ground = false;
+
+    for tick in 0..200 {
+        let mut cmd = Cmd::default();
+        if tick >= 1 {
+            cmd.buttons |= webrace_core::input::BUTTON_SPECIAL;
+        }
+        pmove.step(&mut ps, &cmd);
+        if ps.wjtime > 0 {
+            break;
+        }
+    }
+    let h = (ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]).sqrt();
+    println!("walljump preserve: hspeed={h:.1} vel={:?}", ps.velocity);
+    assert!(ps.wjtime > 0, "walljump did not fire");
+    assert!(h > 650.0, "walljump should preserve ~700 hspeed, got {h}");
+}

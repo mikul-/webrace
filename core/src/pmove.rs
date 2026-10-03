@@ -71,6 +71,13 @@ impl Default for PlayerState {
 
 /// Surface flags (mirrors QFusion qfiles.h).
 pub const SURF_SLICK: i32 = 0x2;
+pub const SURF_SKY: i32 = 0x4;
+pub const SURF_NOWALLJUMP: i32 = 0x80000;
+
+/// Warfork walljump constants (`gs_pmove.c`).
+/// `pm_wjupspeed` is in `lib.rs` as `PM_WJ_UPSPEED`.
+pub const PM_WJ_BOUNCE_FACTOR: f32 = 0.3;
+pub const PM_WJ_CLIP: f32 = 1.0005;
 
 /// Water movement constants (Warfork `gs_pmove.c`).
 pub const PM_WATERACCELERATE: f32 = 10.0;
@@ -163,10 +170,10 @@ impl Pmove {
             return false;
         }
 
-        // Down trace tolerance for ground contact. Larger than Q3's 0.25 because
-        // our slide/step does not carry a persistent ground plane, so a small
-        // margin keeps the player grounded while descending ramps/stairs.
-        let down = 2.0;
+        // Warfork `PM_CategorizePosition` traces only 0.25 units down to decide
+        // ground contact. A larger tolerance keeps the player glued to a down
+        // slope (no gravity => no downhill speed), so match Warfork.
+        let down = 0.25;
         let start = ps.origin;
         let end = [ps.origin[0], ps.origin[1], ps.origin[2] - down];
         let tr = self.world.trace(
@@ -346,14 +353,10 @@ impl Pmove {
         }
         ps.jump_held = jump;
 
-        // Wall-jump.
-        if special {
-            self.walljump(ps, cmd, right, forward, side_push, fwd_push);
-        }
-
-        // Dash.
+        // Warfork order: PM_CheckJump, PM_CheckDash, PM_CheckWallJump.
         if special {
             self.dash(ps, cmd, right, forward, side_push, fwd_push);
+            self.walljump(ps, up_push, right, forward, side_push, fwd_push);
         }
 
         // Ground friction / movement.
@@ -493,18 +496,55 @@ impl Pmove {
         ps.on_ground = false;
     }
 
+    /// Find the nearest wall around the player, Warfork `PlayerTouchWall(12, 0.3)`.
+    /// Tests 12 directions in a circle, offset by the player's velocity; picks
+    /// the nearest surface whose `|normal.z| < 0.3` (a wall), skipping sky /
+    /// nowalljump surfaces. Returns `[0,0,0]` if no wall.
+    fn player_touch_wall(&self, ps: &PlayerState) -> [f32; 3] {
+        const NB: usize = 12;
+        let mut normal = [0.0f32; 3];
+        let mut dist = 1.0f32;
+        // Flat (zero-height) hull, like Warfork (min[2]=max[2]=0).
+        let mins = [self.mins[0], self.mins[1], 0.0];
+        let maxs = [self.maxs[0], self.maxs[1], 0.0];
+        for i in 0..NB {
+            let ang = std::f32::consts::TAU * (i as f32) / (NB as f32);
+            let dir = [
+                ps.origin[0] + self.maxs[0] * ang.cos() + ps.velocity[0] * 0.015,
+                ps.origin[1] + self.maxs[1] * ang.sin() + ps.velocity[1] * 0.015,
+                ps.origin[2],
+            ];
+            let tr = self.world.trace(ps.origin, mins, maxs, dir);
+            if tr.all_solid {
+                return [0.0, 0.0, 0.0];
+            }
+            if tr.fraction >= 1.0 {
+                continue; // no wall in this direction
+            }
+            if tr.surface_flags & (SURF_SKY | SURF_NOWALLJUMP) != 0 {
+                continue;
+            }
+            if tr.fraction > 0.0 && dist > tr.fraction && tr.normal[2].abs() < 0.3 {
+                dist = tr.fraction;
+                normal = tr.normal;
+            }
+        }
+        normal
+    }
+
+    /// Faithful port of Warfork `PM_CheckWallJump` (`gs_pmove.c`). Finds the
+    /// nearest wall, clips the horizontal velocity against it, adds a bounce
+    /// along the wall normal, and restores the (clamped) original horizontal
+    /// speed with a fixed upward kick — preserving speed and the Warfork angle.
     fn walljump(
         &mut self,
         ps: &mut PlayerState,
-        cmd: &Cmd,
-        right: [f32; 3],
-        forward: [f32; 3],
-        side_push: f32,
-        fwd_push: f32,
+        up_push: f32,
+        _right: [f32; 3],
+        _forward: [f32; 3],
+        _side_push: f32,
+        _fwd_push: f32,
     ) {
-        if !(cmd.buttons & crate::input::BUTTON_SPECIAL != 0) {
-            return;
-        }
         if ps.on_ground || ps.wjtime > 0 {
             return;
         }
@@ -512,85 +552,67 @@ impl Pmove {
             return;
         }
 
-        // Direction to check for a wall: the player's horizontal movement
-        // direction, falling back to their input direction.
-        let hvel = [ps.velocity[0], ps.velocity[1]];
-        let hlen = (hvel[0] * hvel[0] + hvel[1] * hvel[1]).sqrt();
-        let mut dir = if hlen > 20.0 {
-            [hvel[0] / hlen, hvel[1] / hlen, 0.0]
+        // Don't walljump if the ground is closer than a step, unless jumping or
+        // fast+rising (Warfork's guard).
+        let hspeed = (ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]).sqrt();
+        let point = [ps.origin[0], ps.origin[1], ps.origin[2] - STEPSIZE];
+        let ground_tr = self.world.trace(ps.origin, self.mins, self.maxs, point);
+        let proceed = up_push >= 10.0
+            || (hspeed > crate::DASH_SPEED && ps.velocity[2] > 8.0)
+            || ground_tr.fraction >= 1.0
+            || (ground_tr.normal[2] < MIN_STEP_NORMAL && !ground_tr.start_solid);
+        if !proceed {
+            return;
+        }
+
+        let normal = self.player_touch_wall(ps);
+        if normal[0] == 0.0 && normal[1] == 0.0 && normal[2] == 0.0 {
+            return;
+        }
+
+        let old_up_velocity = ps.velocity[2];
+        ps.velocity[2] = 0.0;
+
+        // hspeed = VectorNormalize2D(velocity)
+        let mut hspeed = (ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]).sqrt();
+        if hspeed > 0.0 {
+            ps.velocity[0] /= hspeed;
+            ps.velocity[1] /= hspeed;
+        }
+
+        // Clip against the wall, add the bounce along the normal.
+        clip_velocity(&mut ps.velocity, normal, PM_WJ_CLIP);
+        ps.velocity[0] += PM_WJ_BOUNCE_FACTOR * normal[0];
+        ps.velocity[1] += PM_WJ_BOUNCE_FACTOR * normal[1];
+        ps.velocity[2] += PM_WJ_BOUNCE_FACTOR * normal[2];
+
+        // Minimum horizontal speed on a walljump.
+        let min_speed = (WALK_SPEED + self.max_speed) * 0.5;
+        if hspeed < min_speed {
+            hspeed = min_speed;
+        }
+
+        // VectorNormalize(velocity) then scale to hspeed.
+        let len = (ps.velocity[0] * ps.velocity[0]
+            + ps.velocity[1] * ps.velocity[1]
+            + ps.velocity[2] * ps.velocity[2])
+            .sqrt();
+        if len > 0.0 {
+            ps.velocity[0] /= len;
+            ps.velocity[1] /= len;
+            ps.velocity[2] /= len;
+        }
+        ps.velocity[0] *= hspeed;
+        ps.velocity[1] *= hspeed;
+        ps.velocity[2] *= hspeed;
+
+        ps.velocity[2] = if old_up_velocity > PM_WJ_UPSPEED {
+            old_up_velocity
         } else {
-            // Use input direction (forward/strafe), else face forward.
-            let mut d = [
-                forward[0] * fwd_push + right[0] * side_push,
-                forward[1] * fwd_push + right[1] * side_push,
-                0.0,
-            ];
-            let l = (d[0] * d[0] + d[1] * d[1]).sqrt();
-            if l > 0.0 {
-                d[0] /= l;
-                d[1] /= l;
-                d
-            } else {
-                [forward[0], forward[1], 0.0]
-            }
+            PM_WJ_UPSPEED
         };
 
-        // Also probe the opposite direction (a wall behind still lets you
-        // wall-jump off it by pressing special into it). Prefer the movement
-        // direction, then check both.
-        let start = ps.origin;
-        let mut tr = self.world.trace(
-            start,
-            crate::trace::PLAYER_MINS,
-            crate::trace::PLAYER_MAXS,
-            [start[0] + dir[0] * 32.0, start[1] + dir[1] * 32.0, start[2]],
-        );
-        if tr.fraction >= 1.0 {
-            // Try the opposite horizontal direction.
-            dir = [-dir[0], -dir[1], 0.0];
-            tr = self.world.trace(
-                start,
-                crate::trace::PLAYER_MINS,
-                crate::trace::PLAYER_MAXS,
-                [start[0] + dir[0] * 32.0, start[1] + dir[1] * 32.0, start[2]],
-            );
-            if tr.fraction >= 1.0 {
-                return; // no wall nearby
-            }
-        }
-
-        let n = tr.normal;
         ps.special_held = true;
-
-        // Wall-dash: reflect the horizontal velocity off the wall (keeping
-        // magnitude), then ensure a minimum speed pushing away from it.
-        let entry_speed =
-            (ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]).sqrt();
-        let dot = ps.velocity[0] * n[0] + ps.velocity[1] * n[1];
-        let mut bounced = [
-            ps.velocity[0] - 2.0 * dot * n[0],
-            ps.velocity[1] - 2.0 * dot * n[1],
-            ps.velocity[2],
-        ];
-        // Re-normalize the horizontal component to preserve entry speed (the
-        // wall-dash redirects but does not bleed speed going straight on).
-        let h_after =
-            (bounced[0] * bounced[0] + bounced[1] * bounced[1]).sqrt();
-        let target = entry_speed.max((WALK_SPEED + self.max_speed) * 0.5);
-        if h_after > 1.0 {
-            let s = target / h_after;
-            bounced[0] *= s;
-            bounced[1] *= s;
-        } else {
-            // Nearly stopped: push away along the wall normal.
-            bounced[0] = -n[0] * target;
-            bounced[1] = -n[1] * target;
-        }
-        if bounced[2] < PM_WJ_UPSPEED {
-            bounced[2] = PM_WJ_UPSPEED;
-        }
-
-        ps.velocity = bounced;
         ps.wjtime = crate::WALLJUMP_TIMEDELAY;
     }
 
