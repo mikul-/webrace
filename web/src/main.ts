@@ -7,6 +7,7 @@ import { Renderer, perspective, lookAt, multiply } from "./render/renderer";
 import { fetchBsp } from "./sim/map";
 import { api } from "./base";
 import { loadTexture } from "./render/textures";
+import { loadShader } from "./render/shader";
 import { getIdentity, registerNickname, submitTime } from "./net/leaderboard";
 import { Menu } from "./ui/menu";
 import { MovementHud } from "./ui/movement_hud";
@@ -187,6 +188,13 @@ async function loadMap(explicitName?: string) {
     }
     renderer.setChunks(chunks);
 
+    // Skybox: resolve the map's sky shader (SURF_SKY) and its `skyparms` faces.
+    void loadSkybox(mapId)
+      .then((faces) => {
+        if (faces) renderer!.setSkybox(faces);
+      })
+      .catch((e) => log(`skybox: ${(e as Error).message}`));
+
     // Create a playable session at spawn point 0.
     if (sessionId !== null) core.session_drop(sessionId);
     sessionId = core.session_new(mapId, 0);
@@ -208,6 +216,32 @@ async function loadMap(explicitName?: string) {
     setStatus(`load failed: ${(e as Error).message}`);
     log((e as Error).stack || String(e));
   }
+}
+
+/** Load the skybox faces for the map's sky shader (`skyparms`), if any. */
+async function loadSkybox(
+  mapId: number,
+): Promise<Array<{ width: number; height: number; data: Uint8ClampedArray | Uint8Array } | null> | null> {
+  const SURF_SKY = 0x4;
+  const count = core.bsp_shader_count(mapId);
+  if (count === 0) return null;
+  const flags = new Int32Array(count);
+  core.bsp_shader_flags(mapId, flags);
+  let skyIdx = -1;
+  for (let i = 0; i < count; i++) {
+    if (flags[i] & SURF_SKY) {
+      skyIdx = i;
+      break;
+    }
+  }
+  if (skyIdx < 0) return null;
+
+  const name = core.bsp_shader_name(mapId, skyIdx);
+  const def = await loadShader(name);
+  if (!def?.skyparmsBase) return null;
+
+  const suf = ["rt", "bk", "lf", "ft", "up", "dn"];
+  return Promise.all(suf.map((s) => loadTexture(`${def.skyparmsBase}_${s}`)));
 }
 
 function setupResize() {
@@ -459,7 +493,7 @@ function loop() {
     const eye = core.session_eye(sessionId) as unknown as Float32Array;
     const angles = core.session_angles(sessionId) as unknown as Float32Array;
     const view = lookAt([eye[0], eye[1], eye[2]], angles[0], angles[1]);
-    renderer.draw(multiply(proj, view));
+    renderer.draw(multiply(proj, view), [eye[0], eye[1], eye[2]]);
   }
 
   requestAnimationFrame(loop);

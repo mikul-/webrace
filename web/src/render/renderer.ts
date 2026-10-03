@@ -18,6 +18,17 @@ export class Renderer {
   /** Draw chunks: (firstIndex, indexCount, textureId). */
   private chunks: Array<{ first: number; count: number; tex: number }> = [];
 
+  // Skybox.
+  private skyProgram: WebGLProgram | null = null;
+  private skyVao: WebGLVertexArrayObject | null = null;
+  private skyVbo: WebGLBuffer | null = null;
+  private skyIbo: WebGLBuffer | null = null;
+  private skyFaceTextures: (WebGLTexture | null)[] = [];
+  private skyRanges: Array<{ first: number; count: number; axis: number }> = [];
+
+  /** Surface flags. */
+  static readonly SURF_SKY = 0x4;
+
   constructor(canvas: HTMLCanvasElement) {
     const gl = canvas.getContext("webgl2", {
       antialias: false,
@@ -171,6 +182,113 @@ export class Renderer {
     this.chunks = chunks;
   }
 
+  /**
+   * Build the skybox from 6 face images in Q3 suffix order
+   * `[rt, bk, lf, ft, up, dn]` (matching Q3's `suf[]` / `MakeSkyVec`).
+   */
+  setSkybox(faces: Array<{ width: number; height: number; data: Uint8ClampedArray | Uint8Array } | null>) {
+    const gl = this.gl;
+    if (!this.skyProgram) {
+      const vs = `#version 300 es
+        layout(location=0) in vec3 a_pos;
+        layout(location=1) in vec2 a_uv;
+        uniform mat4 u_proj_view;
+        uniform vec3 u_eye;
+        out vec2 v_uv;
+        void main() {
+          gl_Position = u_proj_view * vec4(a_pos + u_eye, 1.0);
+          v_uv = a_uv;
+        }`;
+      const fs = `#version 300 es
+        precision highp float;
+        in vec2 v_uv;
+        uniform sampler2D u_tex;
+        out vec4 outColor;
+        void main() { outColor = vec4(texture(u_tex, v_uv).rgb, 1.0); }`;
+      this.skyProgram = this.link(vs, fs);
+      this.skyVao = gl.createVertexArray();
+      this.skyVbo = gl.createBuffer();
+      this.skyIbo = gl.createBuffer();
+    }
+
+    // Q3 `st_to_vec` / suffix order.
+    const stToVec = [
+      [3, -1, 2],
+      [-3, 1, 2],
+      [1, 3, 2],
+      [-1, -3, 2],
+      [-2, -1, 3],
+      [2, -1, -3],
+    ];
+    const SCALE = 80000;
+    const corners = [
+      [-1, -1],
+      [1, -1],
+      [1, 1],
+      [-1, 1],
+    ];
+    const verts: number[] = [];
+    const idx: number[] = [];
+    this.skyRanges = [];
+    for (let axis = 0; axis < 6; axis++) {
+      const base = verts.length / 5;
+      for (const [s, t] of corners) {
+        const b = [s, t, 1];
+        const out = [0, 0, 0];
+        for (let j = 0; j < 3; j++) {
+          const k = stToVec[axis][j];
+          out[j] = (k < 0 ? -b[-k - 1] : b[k - 1]) * SCALE;
+        }
+        verts.push(out[0], out[1], out[2], (s + 1) * 0.5, (t + 1) * 0.5);
+      }
+      const first = idx.length;
+      idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+      this.skyRanges.push({ first, count: 6, axis });
+    }
+
+    gl.bindVertexArray(this.skyVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.skyVbo);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.skyIbo);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(idx), gl.STATIC_DRAW);
+    const stride = 5 * 4;
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, stride, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 2, gl.FLOAT, false, stride, 12);
+    gl.bindVertexArray(null);
+
+    // Textures (one per face).
+    this.skyFaceTextures = faces.map((img) => {
+      if (!img) return null;
+      const tex = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      setTexParams(gl);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, img.width, img.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, img.data);
+      return tex;
+    });
+  }
+
+  private drawSkybox(projView: Float32Array, eye: [number, number, number]) {
+    if (!this.skyProgram || this.skyRanges.length === 0) return;
+    const gl = this.gl;
+    gl.useProgram(this.skyProgram);
+    gl.uniformMatrix4fv(gl.getUniformLocation(this.skyProgram, "u_proj_view"), false, projView);
+    gl.uniform3fv(gl.getUniformLocation(this.skyProgram, "u_eye"), eye);
+    gl.uniform1i(gl.getUniformLocation(this.skyProgram, "u_tex"), 2);
+    gl.disable(gl.BLEND);
+    gl.bindVertexArray(this.skyVao);
+    for (const r of this.skyRanges) {
+      const tex = this.skyFaceTextures[r.axis];
+      if (!tex) continue;
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.drawElements(gl.TRIANGLES, r.count, gl.UNSIGNED_INT, r.first * 4);
+    }
+    gl.bindVertexArray(null);
+  }
+
   /** Register a decoded image as a texture, returning a texture id. */
   registerTexture(img: { width: number; height: number; data: Uint8ClampedArray | Uint8Array }): number {
     const gl = this.gl;
@@ -185,9 +303,11 @@ export class Renderer {
     return id;
   }
 
-  draw(projView: Float32Array) {
+  draw(projView: Float32Array, eye: [number, number, number] = [0, 0, 0]) {
     const gl = this.gl;
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    // Skybox first: it writes depth far away, so the world draws over it.
+    this.drawSkybox(projView, eye);
     if (this.indexCount === 0) return;
     gl.useProgram(this.program);
     gl.uniformMatrix4fv(this.uProjView, false, projView);

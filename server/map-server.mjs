@@ -235,6 +235,87 @@ async function extractTex(buf, entry, lower, key, shaderName, label) {
   return result;
 }
 
+// ---- shader scripts (.shader) ----
+
+/** Parse `name { ... }` shader blocks from `text` into `index` (name -> block). */
+function parseShaderText(text, index) {
+  const s = text.replace(/\/\/[^\n]*/g, " ");
+  const n = s.length;
+  let i = 0;
+  while (i < n) {
+    while (i < n && /\s/.test(s[i])) i++;
+    if (i >= n) break;
+    const start = i;
+    while (i < n && !/\s/.test(s[i]) && s[i] !== "{") i++;
+    const name = s.slice(start, i).trim();
+    while (i < n && /\s/.test(s[i])) i++;
+    if (s[i] !== "{") continue;
+    let depth = 0;
+    const bstart = i;
+    while (i < n) {
+      if (s[i] === "{") depth++;
+      else if (s[i] === "}") {
+        depth--;
+        if (depth === 0) {
+          i++;
+          break;
+        }
+      }
+      i++;
+    }
+    if (name) index.set(name.toLowerCase(), s.slice(bstart, i));
+  }
+}
+
+/** Build a shader index (name -> block) for a pk3 buffer (cached by caller). */
+async function pk3ShaderIndex(buf) {
+  const index = new Map();
+  let entries;
+  try {
+    entries = readCentralDirectory(buf);
+  } catch {
+    return index;
+  }
+  for (const e of entries) {
+    if (!e.name.toLowerCase().endsWith(".shader")) continue;
+    try {
+      const text = (await extract(buf, e)).toString("latin1");
+      parseShaderText(text, index);
+    } catch {
+      /* skip */
+    }
+  }
+  return index;
+}
+
+const shaderIndexCache = new Map();
+
+/** Resolve a shader name to its script block, searching current + local pk3s. */
+async function resolveShader(name) {
+  const want = name.trim().toLowerCase();
+  const sources = [];
+  if (currentPk3) sources.push({ key: "__current__", buf: currentPk3 });
+  for (const p of pk3Files) sources.push({ key: p });
+  for (const [k, buf] of padporkCache) sources.push({ key: k, buf });
+  for (const src of sources) {
+    let idx = shaderIndexCache.get(src.key);
+    if (!idx) {
+      let buf = src.buf;
+      if (!buf) {
+        try {
+          buf = await readFile(src.key);
+        } catch {
+          continue;
+        }
+      }
+      idx = await pk3ShaderIndex(buf);
+      shaderIndexCache.set(src.key, idx);
+    }
+    if (idx.has(want)) return idx.get(want);
+  }
+  return null;
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
 
@@ -284,6 +365,26 @@ const server = http.createServer(async (req, res) => {
         "Cache-Control": "public, max-age=86400",
       });
       res.end(bytes);
+      return;
+    } catch (e) {
+      res.writeHead(500).end("error: " + e.message);
+      return;
+    }
+  }
+
+  if (url.pathname === "/shader") {
+    const name = url.searchParams.get("name") || "";
+    try {
+      const block = await resolveShader(name);
+      if (!block) {
+        res.writeHead(404).end("shader not found: " + name);
+        return;
+      }
+      res.writeHead(200, {
+        "Content-Type": "text/plain; charset=latin1",
+        "Cache-Control": "public, max-age=86400",
+      });
+      res.end(block);
       return;
     } catch (e) {
       res.writeHead(500).end("error: " + e.message);

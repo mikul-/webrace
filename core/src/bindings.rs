@@ -152,6 +152,22 @@ pub fn bsp_shader_count(id: usize) -> usize {
     MAPS.with(|m| m.borrow().get(id).map(|b| b.shaders.len()).unwrap_or(0))
 }
 
+/// Copy each shader's surface flags into `out` (parallel to `bsp_shader_name`).
+#[wasm_bindgen]
+pub fn bsp_shader_flags(id: usize, out: &mut [i32]) {
+    MAPS.with(|m| {
+        let b = m.borrow();
+        if let Some(bsp) = b.get(id) {
+            for (i, f) in bsp.shader_flags.iter().enumerate() {
+                if i >= out.len() {
+                    break;
+                }
+                out[i] = *f;
+            }
+        }
+    });
+}
+
 /// Number of jumppad (`trigger_push`) volumes parsed from the map.
 #[wasm_bindgen]
 pub fn bsp_jumppad_count(id: usize) -> usize {
