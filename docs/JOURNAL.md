@@ -7,12 +7,25 @@ reconstruct context without re-deriving it.
 ## Current state (read this first)
 
 ### Working / done
-- **Movement physics** (Rust/WASM, ported from Warfork `gs_pmove.cpp`): strafe-jump,
-  air-accel, forward-bunny, dash, wall-jump, jump, crouch, slick (ice) surfaces,
-  ramps (uphill + downhill), stair-stepping, wall-slide (multi-pass `PM_SlideMove`).
+- **Movement physics** (Rust/WASM, **faithful port of Warfork `gs_pmove.c`**):
+  strafe-jump, air-accel, forward-bunny, dash, wall-jump, jump, crouch, slick
+  (ice) surfaces, ramps (up + down), stair-stepping, wall-slide.
+  - `PM_SlideMove` + `PM_StepSlideMove` ported verbatim (incl. the ramp slide:
+    preserve horizontal speed and `velocity[2] = down_v[2]`).
+  - Gravity is **air-only**; `grounded()` uses Warfork `ISWALKABLEPLANE` (0.7)
+    and a 0.25-unit ground trace.
+  - Constants verified against Warfork: run `maxPlayerSpeed 320`, friction 8,
+    air-accel 1, strafe-bunny 70, aircontrol 150, jump 280, dash 450,
+    dash-upspeed 174, walljump-upspeed 330.
+  - `PM_CheckWallJump` ported verbatim (clip + 0.3 bounce, preserves entry
+    hspeed, min 240).
+  - Smooth crouch transition (`PM_AdjustBBox`, `CROUCHTIME=100ms`, viewheight
+    30→12, head-chomp check).
+  - Stair-step **view** smoothing (`PREDICTED_STEP_TIME=150ms`).
 - **Collision**: AABB hull trace against BSP brushes (exact pmove semantics), with
-  fixes for start-solid boundary cases, wall wedging, and inside-corner (>90°)
-  sticking.
+  fixes for start-solid boundary cases, wall wedging, inside-corner (>90°)
+  sticking, coincident `common/slick` overlays, and **solid brush-model entities**
+  (`func_bobbing`/`func_plat`/... submodels added to the world).
 - **BSP loading**: native QFusion/Quake3 `IBSP` v46 — geometry, textures, lightmaps,
   collision brushes, spawn points, and **race gates** (start/checkpoint/finish).
 - **Bezier patches** (`FACETYPE_PATCH`) — control-point grids tessellated into
@@ -41,21 +54,30 @@ reconstruct context without re-deriving it.
 ### Stubbed / not yet built
 - **Shaders** (`.shader` scripts) — not parsed at all. No animated textures, emissive
   glows, multi-stage materials, or skybox.
+- **Moving brush entities** — solid brush models (`func_bobbing`, `func_plat`,
+  `func_door`, `func_train`, ...) are added to collision **statically at their base
+  position**; they don't animate/rotate yet (no riding moving platforms).
 - **Lightgrid** (`LUMP_LIGHTGRID`) — only static vertex color; no dynamic lightgrid
   sampling for entities.
 - **Visibility** (PVS/`LUMP_VISIBILITY`) — everything rendered every frame.
 - **Weapons** (rocket/plasma/grenade/lightning) — `attack` (Mouse0) is bound but no
   weapon logic.
+- **Footstep / impact / jumppad sounds** — no audio at all yet.
 - **Ghosts/replays**, **true multiplayer** (WebTransport), **practice mode**
   (noclip, position-save-anywhere).
 
 ## Ordered TODO (recommended next steps)
-1. ~~Bezier patch tessellation~~ (done — see below).
-2. Shader parsing (sky + animated/emissive textures).
-3. ~~Physical `contents` (water/lava/jumppad/teleporter)~~ (done — see below).
-4. Ghosts/replays (deterministic sim makes this nearly free).
-5. Weapons.
-6. Lightgrid + PVS (perf).
+1. **`.shader` parsing** — skybox (the biggest visual gap: maps currently show the
+   void where the sky should be), animated/emissive textures, transparent/multi-stage
+   materials. Also lets us resolve shader-only `surfaceparm slick` maps.
+2. **Move brush entities** (`func_bobbing`/`func_plat`/`func_door`/`func_train`) —
+   animate them and carry the player (riding platforms), instead of static collision.
+3. **Paired/one-way teleporters + jumppad models/sprites** (visuals for entities).
+4. **Ghosts / replays** — the deterministic sim makes recording/playback nearly free.
+5. **Weapons** (rocket/plasma/grenade/lightning).
+6. **Audio** (footsteps, jump/land, jumppad, weapon) and a sound system.
+7. **Perf**: PVS/`LUMP_VISIBILITY` culling, a collision BVH, lightgrid.
+8. **Multiplayer** (WebTransport) + **practice mode** (noclip, save-anywhere).
 
 ---
 
