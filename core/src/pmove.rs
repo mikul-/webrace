@@ -866,10 +866,13 @@ impl Pmove {
         let down_v = ps.velocity;
 
         // Try the same move from STEPSIZE higher. Warfork checks the raised
-        // position with a zero-length trace (allsolid => can't step).
+        // position with a zero-length trace (`allsolid` => can't step). Our
+        // trace reports an embedded box as `start_solid`, so check both — a low
+        // ceiling (e.g. a crouch tunnel) makes the raised box embedded, and
+        // stepping from there causes a position oscillation at the tunnel mouth.
         let up = [start_o[0], start_o[1], start_o[2] + STEPSIZE];
         let tr = self.world.trace(up, mins, maxs, up);
-        if tr.all_solid {
+        if tr.all_solid || tr.start_solid {
             return; // can't step up
         }
 

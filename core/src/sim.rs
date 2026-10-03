@@ -337,11 +337,13 @@ impl Session {
         self.held_cmd = c;
     }
 
-    /// Camera eye position (render space). The player origin is the box-center
-    /// basis (feet at origin[2]-24); the eye sits ~26 units above that, lower
-    /// when crouched.
+    /// Camera eye position (render space). The eye sits `viewheight` above the
+    /// player origin. Warfork: stand `playerbox_stand_viewheight = 30`, crouch
+    /// `playerbox_crouch_viewheight = 12`. (Our crouch eye used to be 18, which
+    /// is *above* the crouched box top (origin+16), so the camera poked into low
+    /// objects and made the player feel too tall to fit under them.)
     pub fn eye(&self) -> [f32; 3] {
-        let off = if self.ps.crouched { 18.0 } else { 26.0 };
+        let off = if self.ps.crouched { 12.0 } else { 30.0 };
         [self.ps.origin[0], self.ps.origin[1], self.ps.origin[2] + off]
     }
 

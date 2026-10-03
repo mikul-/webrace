@@ -148,6 +148,20 @@ reconstruct context without re-deriving it.
      discarded and the player stuck with the blocked slide. Q3 compares
      **horizontal** distance (`down_dist` vs `up_dist`). Fixed to match.
 
+### Crouch: eye height + step-up oscillation under low ceilings
+- **Eye/viewheight was wrong:** we used stand 26 / crouch 18, but Warfork uses
+  `playerbox_stand_viewheight = 30` / `playerbox_crouch_viewheight = 12`. The
+  crouch eye (18) sat *above* the crouched box top (origin+16), so the camera
+  poked into low objects. Fixed to 30/12. (The collision box itself already
+  matched Warfork: mins z -24, crouch maxs z 16.)
+- **Stuck at a crouch tunnel mouth:** `PM_StepSlideMove` retries the move from
+  `STEPSIZE` (18) higher. Under a low ceiling the raised box is *embedded* in the
+  ceiling; we only checked `trace.all_solid` (always false in our trace), not
+  `trace.start_solid`, so we stepped from an embedded position and the player
+  oscillated at the tunnel mouth (x bounced 183↔184) instead of entering. Now
+  reject the step when `all_solid || start_solid`. Crouched players pass tunnels
+  > 40 units. Regression test in `crouch.rs`.
+
 ### Slick not working on some maps (coincident `common/slick` overlay)
 - On maps like `idiotism2_slick`, nothing was slippery. The map places an
   **invisible `textures/common/slick` brush exactly coincident** with the visible
