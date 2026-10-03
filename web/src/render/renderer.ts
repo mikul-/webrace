@@ -323,7 +323,11 @@ export class Renderer {
           const k = stToVec[axis][j];
           out[j] = (k < 0 ? -b[-k - 1] : b[k - 1]) * SCALE;
         }
-        verts.push(out[0], out[1], out[2], (s + 1) * 0.5, (t + 1) * 0.5);
+        // The wall faces (rt/bk/lf/ft = axes 0..3) need their V inverted so the
+        // sky image's top lands on the wall top (the up/dn faces are already
+        // correct with the direct mapping).
+        const v = axis < 4 ? 1 - (t + 1) * 0.5 : (t + 1) * 0.5;
+        verts.push(out[0], out[1], out[2], (s + 1) * 0.5, v);
       }
       const first = idx.length;
       idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
