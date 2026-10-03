@@ -148,6 +148,18 @@ reconstruct context without re-deriving it.
      discarded and the player stuck with the blocked slide. Q3 compares
      **horizontal** distance (`down_dist` vs `up_dist`). Fixed to match.
 
+### Falling through brush-model entities (func_bobbing platforms)
+- On `BardoK-Strafe1` the player fell through a platform "floating on the water".
+  The platform is a **`func_bobbing` brush-model entity** (`model "*4"`), i.e.
+  its brushes live in a submodel, not model 0. We only loaded model-0 world
+  brushes for collision, so these entities had no collision at all.
+- Fix: `parse_solid_brush_models` walks the entities, and for every solid
+  brush-model classname (`func_*` except `func_illusionary`/`func_areaportal`/
+  `func_portal`/`func_ladder`/`func_water*`) appends that submodel's brushes to
+  the collision world at their base position. Triggers (`trigger_*`) are not
+  affected (they are handled separately). Moving/animation is not modelled yet
+  (`func_bobbing` is static at its base, matching our static rendering).
+
 ### Smooth crouch transition (Warfork `PM_AdjustBBox`)
 - Crouch was instantaneous (box snapped 40 -> 16). Ported Warfork's transition:
   a `crouchtime` (0..`CROUCHTIME`=100ms) interpolates the box maxs.z (40 -> 16)

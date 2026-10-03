@@ -195,8 +195,27 @@ impl Bsp {
         let lightmaps = parse_lightmaps(data, &lumps[LUMP_LIGHTING]);
         let (positions, indices, chunks) =
             parse_drawable(data, &lumps, &shaders, &lightmaps)?;
-        let (brush_plane_offsets, brush_plane_count, brush_plane_ids, brush_shaders, brush_contents) =
-            parse_brushes(data, &lumps, &shader_contents)?;
+        let (
+            mut brush_plane_offsets,
+            mut brush_plane_count,
+            mut brush_plane_ids,
+            mut brush_shaders,
+            mut brush_contents,
+        ) = parse_brushes(data, &lumps, &shader_contents)?;
+        // Add solid brush-model entities (func_bobbing, func_plat, ...) to the
+        // collision world at their base position. Without this the player falls
+        // through floating platforms, doors, etc.
+        {
+            let (models, model_planes) = parse_solid_brush_models(data, &lumps, &shader_contents);
+            let base = brush_plane_ids.len() as u32;
+            for (off, count, shader, contents) in models {
+                brush_plane_offsets.push(base + off);
+                brush_plane_count.push(count);
+                brush_shaders.push(shader);
+                brush_contents.push(contents);
+            }
+            brush_plane_ids.extend_from_slice(&model_planes);
+        }
         let spawns = parse_spawns(data, &lumps[LUMP_ENTITIES]);
         let models = parse_models(data, &lumps[LUMP_MODELS]);
         let race_gates = parse_race(data, &lumps[LUMP_ENTITIES], &models);
@@ -980,6 +999,79 @@ fn parse_triggers(
     }
 
     (jumppads, teleporters, trigger_plane_ids)
+}
+
+/// Is this entity classname a solid brush model (collides with the player)?
+/// `func_*` movers/brush entities are solid; triggers and portals are not.
+fn is_solid_brush_model(classname: &str) -> bool {
+    if !classname.starts_with("func_") {
+        return false;
+    }
+    !matches!(
+        classname,
+        "func_areaportal"
+            | "func_areaportalwindow"
+            | "func_portal"
+            | "func_ladder"
+            | "func_water"
+            | "func_water_analog"
+            | "func_illusionary"
+    )
+}
+
+/// Parse the brushes of solid brush-model entities (`func_bobbing`,
+/// `func_plat`, `func_door`, ...) so they can be added to the collision world.
+/// Returns `(plane_off, plane_count, shader, contents)` per brush plus the
+/// shared plane-id array (empty if there are none).
+fn parse_solid_brush_models(
+    data: &[u8],
+    lumps: &[(u32, u32)],
+    shader_contents: &[i32],
+) -> (Vec<(u32, u32, i32, i32)>, Vec<u32>) {
+    let submodels = parse_submodels(data, &lumps[LUMP_MODELS]);
+    let (eoff, elen) = lumps[LUMP_ENTITIES];
+    let text = String::from_utf8_lossy(&data[eoff as usize..(eoff + elen) as usize]);
+
+    // Submodel numbers (from `model "*N"`) that are solid brush models.
+    let mut solid = Vec::new();
+    for block in text.split('{').skip(1) {
+        let Some(end) = block.find('}') else { continue };
+        let kv = tokenize_entity(&block[..end]);
+        if !is_solid_brush_model(get_entity(&kv, "classname")) {
+            continue;
+        }
+        if let Some(num) = get_entity(&kv, "model")
+            .strip_prefix('*')
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            solid.push(num);
+        }
+    }
+
+    let (boff, _blen) = lumps[LUMP_BRUSHES];
+    let (soff, _slen) = lumps[LUMP_BRUSHSIDES];
+    let mut brushes = Vec::new();
+    let mut plane_ids: Vec<u32> = Vec::new();
+    for num in solid {
+        let Some((firstbrush, numbrushes, _, _)) = submodels.get(num.wrapping_sub(1)).copied() else {
+            continue;
+        };
+        for bi in 0..numbrushes {
+            let b = boff as usize + (firstbrush as usize + bi as usize) * DBRUSH_SIZE;
+            let bsoff = read_i32(data, b) as u32;
+            let bsnum = read_i32(data, b + 4) as u32;
+            let shadernum = read_i32(data, b + 8);
+            let offset = plane_ids.len() as u32;
+            for s in 0..bsnum {
+                let sp = soff as usize + (bsoff as usize + s as usize) * DBRUSHSIDE_SIZE;
+                plane_ids.push(read_i32(data, sp) as u32);
+            }
+            let count = plane_ids.len() as u32 - offset;
+            let contents = shader_contents.get(shadernum as usize).copied().unwrap_or(0);
+            brushes.push((offset, count, shadernum, contents));
+        }
+    }
+    (brushes, plane_ids)
 }
 
 /// Get an entity key's string value (empty if absent).
