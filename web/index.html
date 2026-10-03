@@ -475,6 +475,81 @@
         font-size: 14px;
         flex-shrink: 0;
       }
+      .sound-hint {
+        width: 480px;
+        max-width: 92vw;
+        color: #5a6472;
+        font-size: 11px;
+        margin: 0 0 4px;
+        line-height: 1.6;
+      }
+      .sound-hint code {
+        color: #7fa8d8;
+      }
+      .sound-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 480px;
+        max-width: 92vw;
+      }
+      .sound-reload {
+        background: #11141c;
+        border: 1px solid #7fa8d8;
+        color: #7fa8d8;
+        padding: 6px 12px;
+        font: inherit;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .sound-reload:hover {
+        border-color: #5ce27a;
+        color: #5ce27a;
+      }
+      .sound-status {
+        color: #5a6472;
+        font-size: 11px;
+      }
+      .sound-list {
+        width: 480px;
+        max-width: 92vw;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        margin-top: 6px;
+      }
+      .sound-row {
+        display: grid;
+        grid-template-columns: 150px 1fr 34px;
+        gap: 8px;
+        align-items: center;
+      }
+      .sound-label {
+        color: #9aa3b2;
+      }
+      .sound-select {
+        background: #11141c;
+        border: 1px solid #2a3040;
+        color: #cfd4dd;
+        padding: 5px 8px;
+        font: inherit;
+        min-width: 0;
+      }
+      .sound-select:focus {
+        border-color: #fa00ff;
+        outline: none;
+      }
+      .sound-play {
+        background: #11141c;
+        border: 1px solid #5ce27a;
+        color: #5ce27a;
+        padding: 4px 0;
+        font: inherit;
+        cursor: pointer;
+      }
+      .sound-play:hover {
+        background: #16241a;
+      }
       .menu-hint {
         color: #5a6472;
       }
@@ -561,6 +636,7 @@
       <nav class="tabs">
         <button class="tab active" data-page="leaderboards">Leaderboards</button>
         <button class="tab" data-page="settings">Settings</button>
+        <button class="tab" data-page="sound">Sound</button>
         <button class="tab" data-page="maps">Maps</button>
         <button class="tab" data-page="favorites">Favorites</button>
       </nav>
@@ -609,6 +685,26 @@
           <input id="config-code" placeholder="paste share code" />
           <button id="apply-config">Apply</button>
         </div>
+      </section>
+
+      <section class="page" id="page-sound">
+        <div class="page-title">Sound</div>
+        <div class="menu-group">
+          <label>Master volume <span id="volume-value" class="val"></span></label>
+          <div class="row">
+            <input type="range" id="volume-slider" min="0" max="1" step="0.01" />
+          </div>
+        </div>
+        <p class="sound-hint">
+          Assign a file to each game event. Drop new audio files into <code>snd/</code>
+          at the repo root, then click <em>Reload file list</em> — no restart needed.
+          <br />▶ previews the selected file.
+        </p>
+        <div class="sound-actions">
+          <button id="sound-reload" class="sound-reload">Reload file list</button>
+          <span id="sound-status" class="sound-status"></span>
+        </div>
+        <div id="sound-list" class="sound-list"></div>
       </section>
 
       <section class="page" id="page-maps">

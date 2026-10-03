@@ -100,6 +100,15 @@ pub struct Bsp {
     /// Plane ids of trigger brushes (shared backing store for `Jumppad`/
     /// `Teleporter` plane runs).
     pub trigger_plane_ids: Vec<u32>,
+    /// Animated solid brush entities (`func_bobbing`/`func_plat`/...).
+    pub movers: Vec<MoverDef>,
+    /// Plane ids backing the mover brush runs.
+    pub mover_plane_ids: Vec<u32>,
+    /// Render geometry for movers (separate buffer from the static world so
+    /// each mover can be drawn with its own model matrix).
+    pub mover_positions: Vec<f32>,
+    pub mover_indices: Vec<u32>,
+    pub mover_chunks: Vec<MoverChunk>,
     /// Individual lightmap images (each LIGHTMAP_W×LIGHTMAP_H×3 bytes).
     pub lightmaps: Vec<Vec<u8>>,
     /// Packed lightmap atlas (RGB), and its width/height in pixels.
@@ -165,6 +174,62 @@ pub struct Teleporter {
     pub dest_origin: [f32; 3],
 }
 
+/// A class of animated solid brush entity. `Static` is not produced by
+/// `parse_movers`; non-animated `func_*` entities keep their existing static
+/// collision/rendering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoverKind {
+    Bobbing,
+    Plat,
+    Door,
+    DoorRotating,
+    Train,
+    Rotating,
+    Pendulum,
+}
+
+/// A parsed animated brush entity: its class keys plus the submodel's brush
+/// plane run. The runtime mover (`trace::Mover`) is built from this and
+/// animated in the sim.
+#[derive(Clone, Debug)]
+pub struct MoverDef {
+    pub kind: MoverKind,
+    /// Submodel index (`model "*N"` → N).
+    pub model: usize,
+    /// Entity `origin` key (spawn pivot/local-frame origin), default [0,0,0].
+    pub origin: [f32; 3],
+    /// Entity `angles` key in radians `[pitch, yaw, roll]` (mostly zero).
+    pub angles: [f32; 3],
+    /// Entity `angle` key in degrees (door movedir; -1 up, -2 down).
+    pub angle: f32,
+    pub height: f32,
+    pub speed: f32,
+    pub phase: f32,
+    pub wait: f32,
+    /// `func_door_rotating` `distance` (degrees).
+    pub distance: f32,
+    pub spawnflags: i32,
+    /// `func_train` path (corner origins + per-corner waits), in order.
+    pub path: Vec<[f32; 3]>,
+    pub path_wait: Vec<f32>,
+    /// Plane run into `Bsp::mover_plane_ids`.
+    pub plane_off: u32,
+    pub plane_count: u32,
+    /// Raw submodel AABB.
+    pub mins: [f32; 3],
+    pub maxs: [f32; 3],
+}
+
+/// A draw range of a moving brush entity: `(mover index, shader, first index,
+/// index count)` into the mover render buffers.
+#[derive(Clone, Copy, Debug)]
+pub struct MoverChunk {
+    pub mover: usize,
+    pub shader: i32,
+    pub first: u32,
+    pub count: u32,
+}
+
 impl Bsp {
     /// Parse a raw `.bsp` byte buffer (already extracted from any `.pk3`).
     pub fn parse(name: &str, data: &[u8]) -> Result<Bsp, String> {
@@ -193,8 +258,19 @@ impl Bsp {
         let (shaders, shader_flags, shader_contents) = parse_shaders(data, &lumps[LUMP_SHADERREFS])?;
         let planes = parse_planes(data, &lumps[LUMP_PLANES]);
         let lightmaps = parse_lightmaps(data, &lumps[LUMP_LIGHTING]);
-        let (positions, indices, chunks) =
-            parse_drawable(data, &lumps, &shaders, &lightmaps)?;
+
+        // Animated solid brush entities, parsed before the drawable pass so the
+        // renderer can separate their faces from the static world geometry.
+        let (movers, mover_plane_ids) =
+            parse_movers(data, &lumps, &lumps[LUMP_ENTITIES]);
+        let mover_model_to_idx: std::collections::HashMap<usize, usize> = movers
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.model, i))
+            .collect();
+
+        let (positions, indices, chunks, mover_positions, mover_indices, mover_chunks) =
+            parse_drawable(data, &lumps, &shaders, &lightmaps, &mover_model_to_idx)?;
         let (
             mut brush_plane_offsets,
             mut brush_plane_count,
@@ -202,9 +278,9 @@ impl Bsp {
             mut brush_shaders,
             mut brush_contents,
         ) = parse_brushes(data, &lumps, &shader_contents)?;
-        // Add solid brush-model entities (func_bobbing, func_plat, ...) to the
-        // collision world at their base position. Without this the player falls
-        // through floating platforms, doors, etc.
+        // Add *static* solid brush-model entities (func_static, func_button, ...)
+        // to the collision world at their base position. Animated movers are
+        // handled separately (they collide at their current transform).
         {
             let (models, model_planes) = parse_solid_brush_models(data, &lumps, &shader_contents);
             let base = brush_plane_ids.len() as u32;
@@ -229,6 +305,9 @@ impl Bsp {
             positions,
             indices,
             chunks,
+            mover_positions,
+            mover_indices,
+            mover_chunks,
             brush_plane_offsets,
             brush_plane_count,
             brush_plane_ids,
@@ -243,6 +322,8 @@ impl Bsp {
             jumppads,
             teleporters,
             trigger_plane_ids,
+            movers,
+            mover_plane_ids,
             lightmaps,
             lightmap_atlas,
             lightmap_atlas_w: atlas_w,
@@ -332,7 +413,18 @@ fn parse_drawable(
     lumps: &[(u32, u32)],
     shaders: &[String],
     lightmaps: &[Vec<u8>],
-) -> Result<(Vec<f32>, Vec<u32>, Vec<(i32, u32, u32)>), String> {
+    mover_models: &std::collections::HashMap<usize, usize>,
+) -> Result<
+    (
+        Vec<f32>,
+        Vec<u32>,
+        Vec<(i32, u32, u32)>,
+        Vec<f32>,
+        Vec<u32>,
+        Vec<MoverChunk>,
+    ),
+    String,
+> {
     let (voff, vlen) = lumps[LUMP_VERTEXES];
     let (eoff, _elen) = lumps[LUMP_ELEMENTS];
     let (foff, flen) = lumps[LUMP_FACES];
@@ -365,6 +457,21 @@ fn parse_drawable(
     let atlas_w = (atlas_cols * LIGHTMAP_W) as f32;
     let atlas_h = (atlas_rows * LIGHTMAP_H) as f32;
 
+    // Map each face to its submodel (dmodel_t `firstface`/`numfaces` at byte
+    // offsets 24/28). Model 0 is the world; models 1..n are entities.
+    let (moff, mlen) = lumps[LUMP_MODELS];
+    let nmodels = mlen as usize / DMODEL_SIZE;
+    let mut face_model = vec![0usize; nfaces];
+    for mi in 0..nmodels {
+        let p = moff as usize + mi * DMODEL_SIZE;
+        let firstface = read_i32(data, p + 24).max(0) as usize;
+        let numfaces = read_i32(data, p + 28).max(0) as usize;
+        let end = (firstface + numfaces).min(nfaces);
+        for fm in face_model.iter_mut().take(end).skip(firstface) {
+            *fm = mi;
+        }
+    }
+
     // First pass: collect drawable faces grouped by shader.
     // Each face is either planar/trisurf (an element-index run) or a bezier
     // patch (a control-point grid, tessellated during the emit pass).
@@ -373,7 +480,7 @@ fn parse_drawable(
         Planar(Vec<usize>),
         Patch { firstvert: usize, cp_w: usize, cp_h: usize },
     }
-    let mut groups: Vec<Vec<(FaceRef, i32)>> = vec![Vec::new(); shaders.len()];
+    let mut groups: Vec<Vec<(FaceRef, i32, usize)>> = vec![Vec::new(); shaders.len()];
     for fi in 0..nfaces {
         let f = foff as usize + fi * DFACE_SIZE;
         let shadernum = read_i32(data, f) as usize;
@@ -383,6 +490,7 @@ fn parse_drawable(
         let firstelem = read_i32(data, f + 20) as usize;
         let numelems = read_i32(data, f + 24) as usize;
         let lm_texnum = read_i32(data, f + 28);
+        let model = face_model[fi];
 
         let shader_name = shaders.get(shadernum).map(|s| s.as_str()).unwrap_or("");
         if is_nodraw(shader_name) {
@@ -397,7 +505,7 @@ fn parse_drawable(
                     let raw = read_i32(data, ei);
                     idxs.push((raw + firstvert as i32) as usize);
                 }
-                groups[shadernum].push((FaceRef::Planar(idxs), lm_texnum));
+                groups[shadernum].push((FaceRef::Planar(idxs), lm_texnum, model));
             }
             FACETYPE_PATCH => {
                 // Control-point grid dimensions are the last two fields of the
@@ -410,6 +518,7 @@ fn parse_drawable(
                 groups[shadernum].push((
                     FaceRef::Patch { firstvert, cp_w, cp_h },
                     lm_texnum,
+                    model,
                 ));
             }
             _ => continue,
@@ -419,61 +528,88 @@ fn parse_drawable(
     let mut rv: Vec<f32> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let mut chunks: Vec<(i32, u32, u32)> = Vec::new();
+    // Movers get their own buffer so each can be drawn with its own transform.
+    let mut mover_rv: Vec<f32> = Vec::new();
+    let mut mover_indices: Vec<u32> = Vec::new();
+    let mut mover_chunks: Vec<MoverChunk> = Vec::new();
+
+    // Emit one face's geometry into the given vertex/index buffers.
+    let emit_face = |face_ref: &FaceRef,
+                     lm_texnum: i32,
+                     rv: &mut Vec<f32>,
+                     indices: &mut Vec<u32>| {
+        let (atlas_x, atlas_y) = lightmap_atlas_origin(lm_texnum, atlas_cols);
+        match face_ref {
+            FaceRef::Planar(face_verts) => {
+                let base = rv.len() as u32 / 14;
+                for &vi in face_verts.iter() {
+                    emit_vertex(rv, raw_v[vi], atlas_x, atlas_y, atlas_w, atlas_h);
+                }
+                for k in 0..face_verts.len() as u32 {
+                    indices.push(base + k);
+                }
+            }
+            FaceRef::Patch { firstvert, cp_w, cp_h } => {
+                let base = rv.len() as u32 / 14;
+                let tess = 8usize; // subdivisions per patch dimension
+                patch_tessellate(
+                    rv,
+                    &raw_v,
+                    *firstvert,
+                    *cp_w,
+                    *cp_h,
+                    tess,
+                    atlas_x,
+                    atlas_y,
+                    atlas_w,
+                    atlas_h,
+                );
+                // n×n sub-patches → indices for a triangle grid.
+                let n = tess + 1;
+                for py in 0..tess {
+                    for px in 0..tess {
+                        let i0 = base + (py * n + px) as u32;
+                        let i1 = base + (py * n + px + 1) as u32;
+                        let i2 = base + ((py + 1) * n + px) as u32;
+                        let i3 = base + ((py + 1) * n + px + 1) as u32;
+                        indices.extend_from_slice(&[i0, i1, i2, i1, i3, i2]);
+                    }
+                }
+            }
+        }
+    };
 
     for shadernum in 0..shaders.len() {
         if groups[shadernum].is_empty() {
             continue;
         }
-        let first_index = indices.len() as u32;
-        let face_list = &groups[shadernum];
-        for face in face_list {
-            let (face_ref, lm_texnum) = face;
-            let (atlas_x, atlas_y) = lightmap_atlas_origin(*lm_texnum, atlas_cols);
-            match face_ref {
-                FaceRef::Planar(face_verts) => {
-                    let base = rv.len() as u32 / 14;
-                    for &vi in face_verts.iter() {
-                        emit_vertex(&mut rv, raw_v[vi], atlas_x, atlas_y, atlas_w, atlas_h);
-                    }
-                    for k in 0..face_verts.len() as u32 {
-                        indices.push(base + k);
-                    }
-                }
-                FaceRef::Patch { firstvert, cp_w, cp_h } => {
-                    let base = rv.len() as u32 / 14;
-                    let tess = 8usize; // subdivisions per patch dimension
-                    patch_tessellate(
-                        &mut rv,
-                        &raw_v,
-                        *firstvert,
-                        *cp_w,
-                        *cp_h,
-                        tess,
-                        atlas_x,
-                        atlas_y,
-                        atlas_w,
-                        atlas_h,
-                    );
-                    // n×n sub-patches → indices for a triangle grid.
-                    let n = tess + 1;
-                    for py in 0..tess {
-                        for px in 0..tess {
-                            let i0 = base + (py * n + px) as u32;
-                            let i1 = base + (py * n + px + 1) as u32;
-                            let i2 = base + ((py + 1) * n + px) as u32;
-                            let i3 = base + ((py + 1) * n + px + 1) as u32;
-                            indices.extend_from_slice(&[i0, i1, i2, i1, i3, i2]);
-                        }
-                    }
-                }
+        let world_first = indices.len() as u32;
+        let mut world_any = false;
+        for (face_ref, lm_texnum, model) in &groups[shadernum] {
+            if let Some(&mi) = mover_models.get(model) {
+                let mfirst = mover_indices.len() as u32;
+                emit_face(face_ref, *lm_texnum, &mut mover_rv, &mut mover_indices);
+                mover_chunks.push(MoverChunk {
+                    mover: mi,
+                    shader: shadernum as i32,
+                    first: mfirst,
+                    count: mover_indices.len() as u32 - mfirst,
+                });
+            } else {
+                emit_face(face_ref, *lm_texnum, &mut rv, &mut indices);
+                world_any = true;
             }
         }
-        let first = first_index;
-        let count = indices.len() as u32 - first;
-        chunks.push((shadernum as i32, first, count));
+        if world_any {
+            chunks.push((
+                shadernum as i32,
+                world_first,
+                indices.len() as u32 - world_first,
+            ));
+        }
     }
 
-    Ok((rv, indices, chunks))
+    Ok((rv, indices, chunks, mover_rv, mover_indices, mover_chunks))
 }
 
 /// Append a single interleaved render vertex (14 f32) to `rv`, remapping the
@@ -1001,9 +1137,201 @@ fn parse_triggers(
     (jumppads, teleporters, trigger_plane_ids)
 }
 
+/// Map an entity classname to its animated-mover kind, if any. These are pulled
+/// out of the static collision set and animated by the sim.
+fn is_animated_mover(classname: &str) -> Option<MoverKind> {
+    match classname {
+        "func_bobbing" => Some(MoverKind::Bobbing),
+        "func_plat" => Some(MoverKind::Plat),
+        "func_door" => Some(MoverKind::Door),
+        "func_door_rotating" => Some(MoverKind::DoorRotating),
+        "func_train" => Some(MoverKind::Train),
+        "func_rotating" => Some(MoverKind::Rotating),
+        "func_pendulum" => Some(MoverKind::Pendulum),
+        _ => None,
+    }
+}
+
+/// Parse animated brush entities with their class-specific keys. Returns the
+/// mover defs plus the shared plane-id backing store for their brush runs.
+fn parse_movers(
+    data: &[u8],
+    lumps: &[(u32, u32)],
+    entity_lump: &(u32, u32),
+) -> (Vec<MoverDef>, Vec<u32>) {
+    let submodels = parse_submodels(data, &lumps[LUMP_MODELS]);
+    let (eoff, elen) = *entity_lump;
+    let text = String::from_utf8_lossy(&data[eoff as usize..(eoff + elen) as usize]);
+
+    // First pass: index `path_corner` nodes by targetname (origin, wait,
+    // next-target), used to build func_train paths.
+    let mut corners: std::collections::HashMap<String, ([f32; 3], f32, String)> =
+        std::collections::HashMap::new();
+    for block in text.split('{').skip(1) {
+        let Some(end) = block.find('}') else { continue };
+        let kv = tokenize_entity(&block[..end]);
+        let cn = get_entity(&kv, "classname");
+        if cn != "path_corner" && cn != "target_position" {
+            continue;
+        }
+        let name = get_entity(&kv, "targetname");
+        if name.is_empty() {
+            continue;
+        }
+        let origin = parse_origin(get_entity(&kv, "origin")).unwrap_or([0.0; 3]);
+        let wait = parse_f32(get_entity(&kv, "wait")).unwrap_or(0.0);
+        let next = get_entity(&kv, "target").to_string();
+        corners.insert(name.to_string(), (origin, wait, next));
+    }
+
+    let mut movers = Vec::new();
+    let mut plane_ids: Vec<u32> = Vec::new();
+
+    for block in text.split('{').skip(1) {
+        let Some(end) = block.find('}') else { continue };
+        let kv = tokenize_entity(&block[..end]);
+        let classname = get_entity(&kv, "classname");
+        let Some(kind) = is_animated_mover(classname) else {
+            continue;
+        };
+        let Some(model) = get_entity(&kv, "model")
+            .strip_prefix('*')
+            .and_then(|s| s.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        let Some((firstbrush, numbrushes, mins, maxs)) =
+            submodels.get(model.wrapping_sub(1)).copied()
+        else {
+            continue;
+        };
+
+        let origin = parse_origin(get_entity(&kv, "origin")).unwrap_or([0.0; 3]);
+        let angle = parse_f32(get_entity(&kv, "angle")).unwrap_or(0.0);
+        let angles_deg = parse_vec3(get_entity(&kv, "angles")).unwrap_or([0.0; 3]);
+        let angles = [
+            angles_deg[0].to_radians(),
+            angles_deg[1].to_radians(),
+            angles_deg[2].to_radians(),
+        ];
+        let mut height = parse_f32(get_entity(&kv, "height")).unwrap_or(0.0);
+        let mut speed = parse_f32(get_entity(&kv, "speed")).unwrap_or(0.0);
+        let phase = parse_f32(get_entity(&kv, "phase")).unwrap_or(0.0);
+        let mut wait = parse_f32(get_entity(&kv, "wait")).unwrap_or(0.0);
+        let mut distance = parse_f32(get_entity(&kv, "distance")).unwrap_or(0.0);
+        let spawnflags = parse_int(get_entity(&kv, "spawnflags"));
+
+        // Class defaults (Warfork SP_func_*).
+        match kind {
+            MoverKind::Bobbing => {
+                if height <= 0.0 {
+                    height = 32.0;
+                }
+                if speed <= 0.0 {
+                    speed = 4.0;
+                }
+            }
+            MoverKind::Plat => {
+                if speed <= 0.0 {
+                    speed = 300.0;
+                }
+            }
+            MoverKind::Door => {
+                if speed <= 0.0 {
+                    speed = 600.0;
+                }
+                if wait <= 0.0 {
+                    wait = 2.0;
+                }
+            }
+            MoverKind::DoorRotating => {
+                if speed <= 0.0 {
+                    speed = 100.0;
+                }
+                if wait <= 0.0 {
+                    wait = 3.0;
+                }
+                if distance <= 0.0 {
+                    distance = 90.0;
+                }
+            }
+            MoverKind::Train => {
+                if speed <= 0.0 {
+                    speed = 100.0;
+                }
+            }
+            MoverKind::Rotating => {
+                if speed <= 0.0 {
+                    speed = 100.0;
+                }
+            }
+            MoverKind::Pendulum => {
+                if speed <= 0.0 {
+                    speed = 30.0;
+                }
+            }
+        }
+
+        // func_train: follow the `target` chain through path_corner nodes.
+        let (path, path_wait) = if kind == MoverKind::Train {
+            let mut path = Vec::new();
+            let mut waits = Vec::new();
+            let mut target = get_entity(&kv, "target").to_string();
+            let mut guard = 0;
+            while !target.is_empty() && guard < 256 {
+                let Some((o, w, next)) = corners.get(&target) else {
+                    break;
+                };
+                path.push(*o);
+                waits.push(*w);
+                target = next.clone();
+                guard += 1;
+            }
+            (path, waits)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
+        let (plane_off, plane_count) = brush_planes_into(
+            data,
+            lumps,
+            firstbrush,
+            numbrushes,
+            &mut plane_ids,
+        );
+
+        movers.push(MoverDef {
+            kind,
+            model,
+            origin,
+            angles,
+            angle,
+            height,
+            speed,
+            phase,
+            wait,
+            distance,
+            spawnflags,
+            path,
+            path_wait,
+            plane_off,
+            plane_count,
+            mins,
+            maxs,
+        });
+    }
+
+    (movers, plane_ids)
+}
+
 /// Is this entity classname a solid brush model (collides with the player)?
 /// `func_*` movers/brush entities are solid; triggers and portals are not.
 fn is_solid_brush_model(classname: &str) -> bool {
+    if is_animated_mover(classname).is_some() {
+        // Animated movers are handled by `parse_movers` (they collide at their
+        // current transform, not statically at the authored position).
+        return false;
+    }
     if !classname.starts_with("func_") {
         return false;
     }
@@ -1103,6 +1431,29 @@ fn parse_origin(s: &str) -> Option<[f32; 3]> {
     let y = parts.next()?.parse().ok()?;
     let z = parts.next()?.parse().ok()?;
     Some([x, y, z])
+}
+
+/// Parse a `"x y z"` vector of f32 (empty if the string is malformed).
+fn parse_vec3(s: &str) -> Option<[f32; 3]> {
+    let mut parts = s.split_whitespace();
+    let x = parts.next()?.parse().ok()?;
+    let y = parts.next()?.parse().ok()?;
+    let z = parts.next()?.parse().ok()?;
+    Some([x, y, z])
+}
+
+/// Parse a scalar, accepting decimal or `0x`-prefixed hexadecimal.
+fn parse_int(s: &str) -> i32 {
+    let s = s.trim();
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        i32::from_str_radix(hex, 16).unwrap_or(0)
+    } else {
+        s.parse::<i32>().unwrap_or(0)
+    }
+}
+
+fn parse_f32(s: &str) -> Option<f32> {
+    s.trim().parse::<f32>().ok()
 }
 
 /// Shaders matching these substrings are not drawn (same skip list as wf-tool).

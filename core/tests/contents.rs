@@ -18,6 +18,8 @@ fn solid_world() -> World {
         Plane { normal: [0.0, -1.0, 0.0], dist: 10000.0 },
     ];
     World {
+        movers: vec![],
+        mover_plane_ids: vec![],
         brush_plane_offsets: vec![0],
         brush_plane_count: vec![6],
         brush_plane_ids: (0..6).collect(),
@@ -51,6 +53,8 @@ fn water_world() -> World {
         Plane { normal: [0.0, -1.0, 0.0], dist: 10000.0 },
     ];
     World {
+        movers: vec![],
+        mover_plane_ids: vec![],
         brush_plane_offsets: vec![0, 6],
         brush_plane_count: vec![6, 6],
         brush_plane_ids: (0..12).collect(),

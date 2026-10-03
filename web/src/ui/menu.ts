@@ -4,6 +4,7 @@
 import { Settings, saveSettings, loadSettings, encodeConfig, decodeConfig } from "../settings";
 import { fetchLeaderboard, getIdentity } from "../net/leaderboard";
 import { ACTIONS, BindMap, displayCode } from "../binds";
+import { SOUND_EVENTS } from "../audio";
 import {
   MapInfo,
   getCatalog,
@@ -29,6 +30,14 @@ export interface SettingsCallbacks {
   onSensitivity: (sens: number) => void;
   onBinds: (binds: BindMap) => void;
   onPlayMap: (map: string) => void;
+  /** Sound assignment (event id -> file name) changed. */
+  onSounds: (sounds: Record<string, string>) => void;
+  /** Master sound volume changed (0..1). */
+  onVolume: (volume: number) => void;
+  /** Preview a specific `snd/` file. */
+  onPlaySound: (file: string) => void;
+  /** Fetch the live list of files available under `snd/`. */
+  onListSounds: () => Promise<string[]>;
 }
 
 export class Menu {
@@ -54,6 +63,16 @@ export class Menu {
   private mapsSearchInput: HTMLInputElement;
   private mapsListEl: HTMLElement;
   private favoritesListEl: HTMLElement;
+  // Sound tab.
+  private soundListEl: HTMLElement;
+  private soundStatusEl: HTMLElement;
+  private soundReloadBtn: HTMLButtonElement;
+  private volumeSlider: HTMLInputElement;
+  private volumeValue: HTMLElement;
+  private soundSelects = new Map<string, HTMLSelectElement>();
+  private soundFiles: string[] = [];
+  private soundLoaded = false;
+  private soundLoading = false;
   private cb: SettingsCallbacks;
   private onToggle: (open: boolean) => void;
   private captureAction: string | null = null;
@@ -87,13 +106,21 @@ export class Menu {
     this.mapsSearchInput = document.getElementById("maps-search-input") as HTMLInputElement;
     this.mapsListEl = document.getElementById("maps-list")!;
     this.favoritesListEl = document.getElementById("favorites-list")!;
+    this.soundListEl = document.getElementById("sound-list")!;
+    this.soundStatusEl = document.getElementById("sound-status")!;
+    this.soundReloadBtn = document.getElementById("sound-reload") as HTMLButtonElement;
+    this.volumeSlider = document.getElementById("volume-slider") as HTMLInputElement;
+    this.volumeValue = document.getElementById("volume-value")!;
 
     this.bind();
     this.bindTabs();
     this.bindConfigButtons();
     this.bindLeaderboardControls();
     this.bindMapsControls();
+    this.bindSoundControls();
     this.applyAll();
+    // Preload the drop-in sound list so the dropdowns are ready when opened.
+    void this.ensureSoundsLoaded();
   }
 
   /** Tab/page switching. */
@@ -107,6 +134,7 @@ export class Menu {
         for (const p of pages) p.classList.toggle("active", p.id === `page-${pageId}`);
         if (pageId === "maps") this.ensureCatalogAndRender();
         if (pageId === "favorites") this.ensureCatalogAndRenderFavorites();
+        if (pageId === "sound") void this.ensureSoundsLoaded();
       });
     }
   }
@@ -177,6 +205,91 @@ export class Menu {
     this.mapsSearchInput.addEventListener("input", () => this.renderMapsList());
 
     this.mapsListEl.addEventListener("scroll", this.onMapsListScroll);
+  }
+
+  /** Sound tab: reload button + live file list. */
+  private bindSoundControls() {
+    this.soundReloadBtn.addEventListener("click", () => void this.ensureSoundsLoaded(true));
+  }
+
+  /**
+   * Fetch the list of files under `snd/` (once, or when forced by Reload) and
+   * render the per-event dropdowns.
+   */
+  async ensureSoundsLoaded(force = false) {
+    if (this.soundLoading) return;
+    if (this.soundLoaded && !force) {
+      this.renderSounds();
+      return;
+    }
+    this.soundLoading = true;
+    this.soundStatusEl.textContent = "loading…";
+    try {
+      this.soundFiles = await this.cb.onListSounds();
+      this.soundLoaded = true;
+      this.soundStatusEl.textContent = this.soundFiles.length
+        ? `${this.soundFiles.length} file${this.soundFiles.length === 1 ? "" : "s"}`
+        : "no files found in snd/";
+    } catch {
+      this.soundFiles = [];
+      this.soundStatusEl.textContent = "could not load snd/ (is the map-server running?)";
+    } finally {
+      this.soundLoading = false;
+    }
+    this.renderSounds();
+  }
+
+  /** Build a labelled dropdown + preview button for every sound event. */
+  private renderSounds() {
+    if (!this.soundListEl) return;
+    this.soundListEl.innerHTML = "";
+    this.soundSelects.clear();
+
+    for (const ev of SOUND_EVENTS) {
+      const row = document.createElement("div");
+      row.className = "sound-row";
+
+      const label = document.createElement("span");
+      label.className = "sound-label";
+      label.textContent = ev.label;
+
+      const select = document.createElement("select");
+      select.className = "sound-select";
+      const none = document.createElement("option");
+      none.value = "";
+      none.textContent = this.soundFiles.length ? "— none —" : "(no files in snd/)";
+      select.append(none);
+      for (const f of this.soundFiles) {
+        const opt = document.createElement("option");
+        opt.value = f;
+        opt.textContent = f;
+        select.append(opt);
+      }
+      const cur = (this.settings.sounds ?? {})[ev.id] ?? "";
+      if (cur && this.soundFiles.includes(cur)) select.value = cur;
+      select.addEventListener("change", () => {
+        if (!this.settings.sounds || typeof this.settings.sounds !== "object") {
+          this.settings.sounds = {};
+        }
+        if (select.value) this.settings.sounds[ev.id] = select.value;
+        else delete this.settings.sounds[ev.id];
+        this.save();
+        this.cb.onSounds({ ...this.settings.sounds });
+      });
+      this.soundSelects.set(ev.id, select);
+
+      const play = document.createElement("button");
+      play.className = "sound-play";
+      play.textContent = "▶";
+      play.title = "preview selected file";
+      play.addEventListener("click", () => {
+        const file = select.value;
+        if (file) this.cb.onPlaySound(file);
+      });
+
+      row.append(label, select, play);
+      this.soundListEl.append(row);
+    }
   }
 
   async getCatalog(): Promise<MapInfo[]> {
@@ -325,6 +438,9 @@ export class Menu {
 
     // Crosshair size
     this.xhairSize.addEventListener("input", () => this.setCrosshairSize(Number(this.xhairSize.value)));
+
+    // Master sound volume
+    this.volumeSlider.addEventListener("input", () => this.setVolume(Number(this.volumeSlider.value)));
   }
 
   private setFov(v: number) {
@@ -359,6 +475,15 @@ export class Menu {
     this.save();
   }
 
+  private setVolume(v: number) {
+    const clamped = Math.min(1, Math.max(0, v));
+    this.settings.volume = clamped;
+    this.volumeValue.textContent = `${Math.round(clamped * 100)}%`;
+    if (Number(this.volumeSlider.value) !== clamped) this.volumeSlider.value = String(clamped);
+    this.cb.onVolume(clamped);
+    this.save();
+  }
+
   private save() {
     saveSettings(this.settings);
   }
@@ -383,8 +508,20 @@ export class Menu {
     this.xhairEl.style.width = `${this.settings.crosshairSize}px`;
     this.xhairEl.style.height = `${this.settings.crosshairSize}px`;
 
+    const volume = Math.min(1, Math.max(0, this.settings.volume ?? 0.8));
+    this.volumeSlider.value = String(volume);
+    this.volumeValue.textContent = `${Math.round(volume * 100)}%`;
+    this.cb.onVolume(volume);
+
     this.cb.onBinds({ ...this.settings.binds });
     this.renderBinds();
+
+    // Sound assignments: ensure the object exists and push to the audio system.
+    if (!this.settings.sounds || typeof this.settings.sounds !== "object") {
+      this.settings.sounds = {};
+    }
+    this.cb.onSounds({ ...this.settings.sounds });
+    if (this.soundLoaded) this.renderSounds();
   }
 
   /** Open/close the menu. */

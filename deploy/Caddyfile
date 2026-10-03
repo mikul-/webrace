@@ -28,6 +28,14 @@ ip.mikul.se {
 		uri strip_prefix /webrace
 		reverse_proxy 192.168.0.107:4173
 	}
+	handle /webrace/sounds {
+		uri strip_prefix /webrace
+		reverse_proxy 192.168.0.107:4173
+	}
+	handle /webrace/snd/* {
+		uri strip_prefix /webrace
+		reverse_proxy 192.168.0.107:4173
+	}
 	handle /webrace/api/* {
 		uri strip_prefix /webrace
 		reverse_proxy 192.168.0.107:4174

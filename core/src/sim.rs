@@ -179,6 +179,7 @@ impl Session {
         self.ps.on_ground = false;
         self.ps.special_held = false;
         self.ps.jump_held = false;
+        self.ps.ground_mover = -1;
         self.angles.set_view_rad(self.spawn_yaw, self.spawn_pitch);
         self.held_cmd = Cmd::default();
         self.pmove.drop_to_ground(&mut self.ps);
@@ -391,6 +392,17 @@ impl Session {
     pub fn on_ground(&self) -> bool { self.ps.on_ground }
     pub fn origin(&self) -> [f32; 3] { self.ps.origin }
     pub fn velocity(&self) -> [f32; 3] { self.ps.velocity }
+    /// Gameplay event bits emitted since the last `step` (see `crate::EV_*`).
+    pub fn events(&self) -> u32 { self.pmove.events }
+
+    /// Per-mover render transforms (12 floats each: origin + 3 basis vectors,
+    /// column-major for the GL model matrix).
+    pub fn mover_transforms(&self) -> Vec<f32> {
+        self.pmove.world.mover_transforms()
+    }
+    pub fn mover_count(&self) -> usize {
+        self.pmove.world.movers.len()
+    }
 
     /// Movement HUD diagnostics: the data the client needs to render strafe /
     /// bunny turn indicators and an acceleration bar.

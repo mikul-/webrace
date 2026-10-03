@@ -43,12 +43,17 @@ pub struct PlayerState {
     pub ground_flags: i32,
     /// Normal of the ground plane currently stood on (for slope sliding).
     pub ground_normal: [f32; 3],
+    /// Index into `World.movers` of the moving brush entity the player is
+    /// standing on (`-1` = static world). Used to carry the player (`SV_Push`).
+    pub ground_mover: i32,
     /// Water submersion level (0 none, 1 feet, 2 waist, 3 head).
     pub waterlevel: i32,
     /// Contents of the liquid the player is in (CONTENTS_WATER/LAVA/SLIME).
     pub watertype: i32,
     // Velocity magnitude last tick (for overbounce / speed display).
     pub speed: f32,
+    /// Distance accumulated while walking on the ground, for footstep events.
+    pub footstep_acc: f32,
 }
 
 impl Default for PlayerState {
@@ -67,9 +72,11 @@ impl Default for PlayerState {
             viewheight: STAND_VIEWHEIGHT,
             ground_flags: 0,
             ground_normal: [0.0, 0.0, 1.0],
+            ground_mover: -1,
             waterlevel: 0,
             watertype: 0,
             speed: 0.0,
+            footstep_acc: 0.0,
         }
     }
 }
@@ -112,6 +119,8 @@ pub struct Pmove {
     /// Height stepped up this tick (Warfork `pm->step`), for view smoothing.
     /// 0 when no step occurred.
     pub step: f32,
+    /// Gameplay events emitted this tick (see `crate::EV_*`), for sound.
+    pub events: u32,
 }
 
 impl Pmove {
@@ -130,6 +139,7 @@ impl Pmove {
             mins: crate::trace::PLAYER_MINS,
             maxs: crate::trace::PLAYER_MAXS,
             step: 0.0,
+            events: 0,
         }
     }
 
@@ -184,6 +194,7 @@ impl Pmove {
         if ps.velocity[2] > 180.0 {
             ps.ground_flags = 0;
             ps.ground_normal = [0.0, 0.0, 1.0];
+            ps.ground_mover = -1;
             return false;
         }
 
@@ -203,6 +214,7 @@ impl Pmove {
         if tr.fraction >= 1.0 {
             ps.ground_flags = 0;
             ps.ground_normal = [0.0, 0.0, 1.0];
+            ps.ground_mover = -1;
             return false;
         }
         // Warfork `ISWALKABLEPLANE`: normal.z >= 0.7 for ALL surfaces (slick or
@@ -213,10 +225,12 @@ impl Pmove {
         if tr.normal[2] >= MIN_STEP_NORMAL || tr.start_solid {
             ps.ground_flags = tr.surface_flags;
             ps.ground_normal = tr.normal;
+            ps.ground_mover = tr.mover;
             return true;
         }
         ps.ground_flags = 0;
         ps.ground_normal = [0.0, 0.0, 1.0];
+        ps.ground_mover = -1;
         false
     }
 
@@ -342,9 +356,67 @@ impl Pmove {
         ps.crouched = ps.crouchtime > 0.0;
     }
 
+    /// Advance every moving brush entity and carry the rider if the player is
+    /// standing on one (port of Qfusion `SV_Push` rider handling).
+    fn advance_movers(&mut self, ps: &mut PlayerState) {
+        let player = crate::trace::PlayerBox {
+            origin: ps.origin,
+            mins: self.mins,
+            maxs: self.maxs,
+        };
+        self.world.advance_movers(self.frametime, Some(&player));
+
+        if !ps.on_ground || ps.ground_mover < 0 {
+            return;
+        }
+        let mi = ps.ground_mover as usize;
+        if mi >= self.world.movers.len() {
+            return;
+        }
+        let m = &self.world.movers[mi];
+        let d = [
+            m.origin[0] - m.prev_origin[0],
+            m.origin[1] - m.prev_origin[1],
+            m.origin[2] - m.prev_origin[2],
+        ];
+        let da = [
+            m.angles[0] - m.prev_angles[0],
+            m.angles[1] - m.prev_angles[1],
+            m.angles[2] - m.prev_angles[2],
+        ];
+
+        // Linear carry.
+        ps.origin[0] += d[0];
+        ps.origin[1] += d[1];
+        ps.origin[2] += d[2];
+
+        // Rotational carry about the mover's (new) origin.
+        if da[0].abs() > 1e-9 || da[1].abs() > 1e-9 || da[2].abs() > 1e-9 {
+            let axis = crate::trace::angles_to_axis(da);
+            let rel = [
+                ps.origin[0] - m.origin[0],
+                ps.origin[1] - m.origin[1],
+                ps.origin[2] - m.origin[2],
+            ];
+            let rot = crate::trace::axis_transform(&axis, rel);
+            ps.origin = [m.origin[0] + rot[0], m.origin[1] + rot[1], m.origin[2] + rot[2]];
+            // Carry the view yaw with the platform (Qfusion adds amove[YAW]).
+            ps.viewangles[1] += da[1];
+        }
+    }
+
     /// Advance one tick.
     pub fn step(&mut self, ps: &mut PlayerState, cmd: &Cmd) {
         self.step = 0.0;
+        self.events = 0;
+
+        // Advance moving brush entities and carry any rider. This must happen
+        // before the player's own movement so a rising platform lifts the
+        // player (Qfusion `SV_Push`, driven from the sim, not the renderer).
+        self.advance_movers(ps);
+        // Ground state at the start of the tick (for land detection below).
+        let was_ground = ps.on_ground;
+
         let special = cmd.buttons & crate::input::BUTTON_SPECIAL != 0;
         let jump = cmd.buttons & crate::input::BUTTON_JUMP != 0;
         let crouch = cmd.buttons & crate::input::BUTTON_CROUCH != 0;
@@ -463,6 +535,21 @@ impl Pmove {
         // Recompute ground contact.
         self.update_ground(ps);
 
+        // Landing event (airborne last tick -> grounded now).
+        if !was_ground && ps.on_ground {
+            self.events |= crate::EV_LAND;
+        }
+        // Footsteps: emit roughly every 60 units walked while on the ground.
+        if ps.on_ground {
+            let hspeed =
+                (ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]).sqrt();
+            ps.footstep_acc += hspeed * self.frametime;
+            if ps.footstep_acc >= 60.0 {
+                ps.footstep_acc = 0.0;
+                self.events |= crate::EV_FOOTSTEP;
+            }
+        }
+
         // Triggers: teleporters move the player; jumppads launch them.
         self.check_triggers(ps);
 
@@ -502,6 +589,7 @@ impl Pmove {
         ps.on_ground = false;
         ps.doshtime = 0;
         ps.wjtime = 0;
+        self.events |= crate::EV_JUMP;
     }
 
     fn dash(
@@ -557,6 +645,7 @@ impl Pmove {
 
         ps.doshtime = DASHJUMP_TIMEDELAY;
         ps.on_ground = false;
+        self.events |= crate::EV_DASH;
     }
 
     /// Find the nearest wall around the player, Warfork `PlayerTouchWall(12, 0.3)`.
@@ -677,6 +766,7 @@ impl Pmove {
 
         ps.special_held = true;
         ps.wjtime = crate::WALLJUMP_TIMEDELAY;
+        self.events |= crate::EV_WALLJUMP;
     }
 
     fn ground_move(
@@ -1164,6 +1254,7 @@ impl Pmove {
         if let Some(tp) = self.world.teleporter_at(origin, mins, maxs) {
             let dest = tp.dest_origin;
             ps.origin = dest;
+            self.events |= crate::EV_TELEPORT;
             self.drop_to_ground(ps);
             return;
         }
@@ -1173,6 +1264,7 @@ impl Pmove {
             ps.on_ground = false;
             ps.wjtime = 0;
             ps.doshtime = 0;
+            self.events |= crate::EV_JUMPPAD;
         }
     }
 }

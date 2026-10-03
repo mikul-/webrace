@@ -72,12 +72,15 @@ pub fn session_set_sensitivity(id: usize, sens: f32) {
 }
 
 #[wasm_bindgen]
-pub fn session_step(id: usize) {
+pub fn session_step(id: usize) -> u32 {
     SESSIONS.with(|s| {
-        if let Some(Some(s)) = s.borrow_mut().get_mut(id) {
-            s.step();
+        if let Some(Some(session)) = s.borrow_mut().get_mut(id) {
+            session.step();
+            session.events()
+        } else {
+            0
         }
-    });
+    })
 }
 
 // Getters (copy small values out to avoid holding the borrow across JS).
@@ -159,6 +162,29 @@ pub fn session_on_ground(id: usize) -> bool {
             .and_then(|o| o.as_ref())
             .map(|s| s.on_ground())
             .unwrap_or(false)
+    })
+}
+
+/// Per-mover render transforms (12 floats each: origin + 3 basis vectors).
+#[wasm_bindgen]
+pub fn session_mover_transforms(id: usize) -> Vec<f32> {
+    SESSIONS.with(|s| {
+        s.borrow()
+            .get(id)
+            .and_then(|o| o.as_ref())
+            .map(|s| s.mover_transforms())
+            .unwrap_or_default()
+    })
+}
+
+#[wasm_bindgen]
+pub fn session_mover_count(id: usize) -> usize {
+    SESSIONS.with(|s| {
+        s.borrow()
+            .get(id)
+            .and_then(|o| o.as_ref())
+            .map(|s| s.mover_count())
+            .unwrap_or(0)
     })
 }
 

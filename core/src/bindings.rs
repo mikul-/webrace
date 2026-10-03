@@ -180,6 +180,73 @@ pub fn bsp_teleporter_count(id: usize) -> usize {
     MAPS.with(|m| m.borrow().get(id).map(|b| b.teleporters.len()).unwrap_or(0))
 }
 
+/// Number of animated solid brush entities (`func_bobbing`/`func_plat`/...).
+#[wasm_bindgen]
+pub fn bsp_mover_count(id: usize) -> usize {
+    MAPS.with(|m| m.borrow().get(id).map(|b| b.movers.len()).unwrap_or(0))
+}
+
+#[wasm_bindgen]
+pub fn bsp_mover_vertex_count(id: usize) -> usize {
+    MAPS.with(|m| m.borrow().get(id).map(|b| b.mover_positions.len()).unwrap_or(0))
+}
+
+#[wasm_bindgen]
+pub fn bsp_mover_index_count(id: usize) -> usize {
+    MAPS.with(|m| m.borrow().get(id).map(|b| b.mover_indices.len()).unwrap_or(0))
+}
+
+/// Byte offset into WASM memory of the mover render vertices (14 f32 each).
+#[wasm_bindgen]
+pub fn bsp_mover_vertices_ptr(id: usize) -> usize {
+    MAPS.with(|m| {
+        m.borrow()
+            .get(id)
+            .map(|b| b.mover_positions.as_ptr() as usize)
+            .unwrap_or(0)
+    })
+}
+
+#[wasm_bindgen]
+pub fn bsp_mover_indices_ptr(id: usize) -> usize {
+    MAPS.with(|m| {
+        m.borrow()
+            .get(id)
+            .map(|b| b.mover_indices.as_ptr() as usize)
+            .unwrap_or(0)
+    })
+}
+
+#[wasm_bindgen]
+pub fn bsp_mover_chunk_count(id: usize) -> usize {
+    MAPS.with(|m| m.borrow().get(id).map(|b| b.mover_chunks.len()).unwrap_or(0))
+}
+
+/// Write mover draw chunks: `(mover_index, shader_index, first_index, count)`.
+#[wasm_bindgen]
+pub fn bsp_mover_chunks(
+    id: usize,
+    mover_out: &mut [u32],
+    shader_out: &mut [u32],
+    first: &mut [u32],
+    count: &mut [u32],
+) {
+    MAPS.with(|m| {
+        let b = m.borrow();
+        if let Some(bsp) = b.get(id) {
+            for (i, c) in bsp.mover_chunks.iter().enumerate() {
+                if i >= mover_out.len() {
+                    break;
+                }
+                mover_out[i] = c.mover as u32;
+                shader_out[i] = c.shader as u32;
+                first[i] = c.first;
+                count[i] = c.count;
+            }
+        }
+    });
+}
+
 /// Completely drop all loaded maps and reset the thread-local store.
 #[wasm_bindgen]
 pub fn bsp_release_all() {

@@ -4,6 +4,7 @@
 // Milestone 2: playable movement. Multiplayer + weapons wire in later.
 
 import { Renderer, perspective, lookAt, multiply } from "./render/renderer";
+import type { MoverChunk } from "./render/renderer";
 import { fetchBsp } from "./sim/map";
 import { api } from "./base";
 import { loadTexture } from "./render/textures";
@@ -12,6 +13,7 @@ import { getIdentity, registerNickname, submitTime } from "./net/leaderboard";
 import { Menu } from "./ui/menu";
 import { MovementHud } from "./ui/movement_hud";
 import { BindMap, DEFAULT_BINDS, codeToAction, mouseButtonToCode, Action } from "./binds";
+import { SoundManager } from "./audio";
 import init, * as core from "../pkg/webrace_core.js";
 
 const overlay = document.getElementById("overlay")!;
@@ -41,6 +43,15 @@ let menu: Menu | null = null;
 let binds: BindMap = { ...DEFAULT_BINDS };
 let actionByCode = codeToAction(binds);
 const moveHud = new MovementHud();
+// Sound: maps gameplay event bits + menu assignments to files under `snd/`.
+const audio = new SoundManager();
+// Browsers require a user gesture before audio can start; unlock on the first
+// pointer/key anywhere (covers the Play button, canvas pointer-lock, previews).
+const unlockAudio = () => audio.unlock();
+window.addEventListener("pointerdown", unlockAudio, { capture: true });
+window.addEventListener("keydown", unlockAudio, { capture: true });
+// Pool for per-mover model matrices (reused each frame to avoid GC churn).
+const moverMatrixPool: Float32Array[] = [];
 
 // Key state (held actions).
 const keys: Record<string, boolean> = {
@@ -84,6 +95,10 @@ async function main() {
           mapInput.value = map;
           void loadMap(map);
         },
+        onSounds: (sounds) => audio.setAssignments(sounds),
+        onVolume: (volume) => audio.setVolume(volume),
+        onPlaySound: (file) => audio.playFile(file),
+        onListSounds: () => audio.listFiles(),
       },
       (open) => {
         // Release pointer lock when opening the menu so the mouse is usable.
@@ -149,6 +164,15 @@ async function loadMap(explicitName?: string) {
       idxCount,
     );
 
+    // Upload moving brush entities into their own buffer.
+    renderer.uploadMovers(
+      memory,
+      core.bsp_mover_vertices_ptr(mapId),
+      core.bsp_mover_vertex_count(mapId),
+      core.bsp_mover_indices_ptr(mapId),
+      core.bsp_mover_index_count(mapId),
+    );
+
     // Upload the lightmap atlas.
     renderer.uploadLightmap(
       memory,
@@ -165,8 +189,18 @@ async function loadMap(explicitName?: string) {
     const chunkCountArr = new Uint32Array(chunkCount);
     core.bsp_chunks(mapId, shaderIdx, chunkFirst, chunkCountArr);
 
-    // Unique shaders used by the map.
-    const uniqueShaders = Array.from(new Set(Array.from(shaderIdx)));
+    // Mover draw chunks (per mover + shader).
+    const moverChunkCount = core.bsp_mover_chunk_count(mapId);
+    const moverIdx = new Uint32Array(moverChunkCount);
+    const moverShader = new Uint32Array(moverChunkCount);
+    const moverFirst = new Uint32Array(moverChunkCount);
+    const moverCountArr = new Uint32Array(moverChunkCount);
+    core.bsp_mover_chunks(mapId, moverIdx, moverShader, moverFirst, moverCountArr);
+
+    // Unique shaders used by world geometry and movers.
+    const uniqueShaders = Array.from(
+      new Set([...Array.from(shaderIdx), ...Array.from(moverShader)]),
+    );
     const shaderNames = uniqueShaders.map((s) => core.bsp_shader_name(mapId, s));
     const defs = await loadShaders(shaderNames);
 
@@ -237,6 +271,20 @@ async function loadMap(explicitName?: string) {
       chunks.push({ first: chunkFirst[i], count: chunkCountArr[i], ...info });
     }
     renderer.setChunks(chunks);
+
+    // Mover chunks (same shader info, plus the mover index for the matrix).
+    const moverChunks: MoverChunk[] = [];
+    for (let i = 0; i < moverChunkCount; i++) {
+      const info = infoByShader.get(moverShader[i]);
+      if (!info) continue;
+      moverChunks.push({
+        model: moverIdx[i],
+        first: moverFirst[i],
+        count: moverCountArr[i],
+        ...info,
+      });
+    }
+    renderer.setMoverChunks(moverChunks);
 
     // Skybox: clear any previous one (the new map may have none), then resolve
     // this map's sky shader (SURF_SKY) and its `skyparms` faces.
@@ -475,12 +523,15 @@ function loop() {
   if (sessionId !== null && !menuOpen) {
     // process queued mouse + keys, then step the fixed-rate loop.
     let steps = 0;
+    let events = 0;
     while (now - lastTick >= TICK_MS && steps < 8) {
       pushKeys();
-      core.session_step(sessionId);
+      events |= core.session_step(sessionId);
       lastTick += TICK_MS;
       steps++;
     }
+    // Play sounds for gameplay events emitted across this frame's ticks.
+    if (events) audio.handleBits(events);
     if (now - lastTick >= TICK_MS) {
       // We fell behind (e.g. tab was backgrounded) — drop the backlog.
       lastTick = now;
@@ -545,7 +596,25 @@ function loop() {
     const eye = core.session_eye(sessionId) as unknown as Float32Array;
     const angles = core.session_angles(sessionId) as unknown as Float32Array;
     const view = lookAt([eye[0], eye[1], eye[2]], angles[0], angles[1]);
-    renderer.draw(multiply(proj, view), [eye[0], eye[1], eye[2]], now / 1000);
+
+    // Per-mover model matrices (origin + 3 basis columns), column-major.
+    const transforms = core.session_mover_transforms(sessionId) as unknown as Float32Array;
+    const moverMatrices: Float32Array[] = [];
+    for (let i = 0, k = 0; i + 12 <= transforms.length; i += 12, k++) {
+      let m = moverMatrixPool[k];
+      if (!m) {
+        m = new Float32Array(16);
+        moverMatrixPool[k] = m;
+      }
+      // columns = axis[0], axis[1], axis[2]; translation = origin.
+      m[0] = transforms[i + 3]; m[1] = transforms[i + 4]; m[2] = transforms[i + 5]; m[3] = 0;
+      m[4] = transforms[i + 6]; m[5] = transforms[i + 7]; m[6] = transforms[i + 8]; m[7] = 0;
+      m[8] = transforms[i + 9]; m[9] = transforms[i + 10]; m[10] = transforms[i + 11]; m[11] = 0;
+      m[12] = transforms[i]; m[13] = transforms[i + 1]; m[14] = transforms[i + 2]; m[15] = 1;
+      moverMatrices.push(m);
+    }
+
+    renderer.draw(multiply(proj, view), [eye[0], eye[1], eye[2]], now / 1000, moverMatrices);
   }
 
   requestAnimationFrame(loop);

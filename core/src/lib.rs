@@ -13,6 +13,16 @@ use wasm_bindgen::prelude::*;
 /// Maximum tick rate the simulation runs at (250 Hz).
 pub const TICK_RATE: u32 = 250;
 
+/// Per-tick gameplay event bits, consumed by the client's sound system. The
+/// bit order is mirrored in `web/src/audio.ts` (`EVENT_BITS`).
+pub const EV_JUMP: u32 = 1 << 0;
+pub const EV_DASH: u32 = 1 << 1;
+pub const EV_WALLJUMP: u32 = 1 << 2;
+pub const EV_LAND: u32 = 1 << 3;
+pub const EV_FOOTSTEP: u32 = 1 << 4;
+pub const EV_JUMPPAD: u32 = 1 << 5;
+pub const EV_TELEPORT: u32 = 1 << 6;
+
 /// Warfork movement constants (verified against `gs_pmove.cpp`).
 pub const GRAVITY: f32 = 850.0;
 pub const BASEGRAVITY: f32 = 800.0;

@@ -17,6 +17,13 @@ export interface DrawChunk {
   overlays: Array<{ tex: number; blend: BlendMode; scroll: [number, number] }>;
 }
 
+/** A draw chunk belonging to a moving brush entity (indexed by `model`). */
+export interface MoverChunk extends DrawChunk {
+  model: number;
+}
+
+const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+
 export class Renderer {
   gl: WebGL2RenderingContext;
   private program: WebGLProgram;
@@ -24,7 +31,15 @@ export class Renderer {
   private vbo: WebGLBuffer;
   private ibo: WebGLBuffer;
   private indexCount = 0;
+  // Moving brush entities use a second vertex/index buffer so each mover can be
+  // drawn with its own model matrix.
+  private moverVao: WebGLVertexArrayObject | null = null;
+  private moverVbo: WebGLBuffer | null = null;
+  private moverIbo: WebGLBuffer | null = null;
+  private moverIndexCount = 0;
+  private moverChunks: MoverChunk[] = [];
   private uProjView: WebGLUniformLocation;
+  private uModel: WebGLUniformLocation;
   private uHasTexture: WebGLUniformLocation;
   private uLit: WebGLUniformLocation;
   private uScroll: WebGLUniformLocation;
@@ -32,6 +47,7 @@ export class Renderer {
   // Overlay (FX) program.
   private fxProgram: WebGLProgram;
   private fxProjView: WebGLUniformLocation;
+  private fxModel: WebGLUniformLocation;
   private fxScroll: WebGLUniformLocation;
   private fxTime: WebGLUniformLocation;
   private lightmapTex: WebGLTexture;
@@ -69,9 +85,10 @@ export class Renderer {
       layout(location=3) in vec3 a_norm;
       layout(location=4) in vec4 a_color;
       uniform mat4 u_proj_view;
+      uniform mat4 u_model;
       out vec2 v_uv; out vec2 v_lm; out vec3 v_norm; out vec4 v_color;
       void main() {
-        gl_Position = u_proj_view * vec4(a_pos, 1.0);
+        gl_Position = u_proj_view * u_model * vec4(a_pos, 1.0);
         v_uv = a_uv; v_lm = a_lm; v_norm = a_norm; v_color = a_color;
       }`;
     const fs = `#version 300 es
@@ -104,6 +121,7 @@ export class Renderer {
     gl.useProgram(this.program);
 
     this.uProjView = gl.getUniformLocation(this.program, "u_proj_view")!;
+    this.uModel = gl.getUniformLocation(this.program, "u_model")!;
     this.uHasTexture = gl.getUniformLocation(this.program, "u_has_texture")!;
     this.uLit = gl.getUniformLocation(this.program, "u_lit")!;
     this.uScroll = gl.getUniformLocation(this.program, "u_scroll")!;
@@ -119,9 +137,10 @@ export class Renderer {
       layout(location=1) in vec2 a_uv;
       layout(location=4) in vec4 a_color;
       uniform mat4 u_proj_view;
+      uniform mat4 u_model;
       out vec2 v_uv; out vec4 v_color;
       void main() {
-        gl_Position = u_proj_view * vec4(a_pos, 1.0);
+        gl_Position = u_proj_view * u_model * vec4(a_pos, 1.0);
         v_uv = a_uv; v_color = a_color;
       }`;
     const fxFs = `#version 300 es
@@ -136,6 +155,7 @@ export class Renderer {
       }`;
     this.fxProgram = this.link(fxVs, fxFs);
     this.fxProjView = gl.getUniformLocation(this.fxProgram, "u_proj_view")!;
+    this.fxModel = gl.getUniformLocation(this.fxProgram, "u_model")!;
     this.fxScroll = gl.getUniformLocation(this.fxProgram, "u_scroll")!;
     this.fxTime = gl.getUniformLocation(this.fxProgram, "u_time")!;
     gl.useProgram(this.fxProgram);
@@ -225,6 +245,53 @@ export class Renderer {
     const idx = new Uint32Array(memory.buffer, idxPtr, idxCount);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
     this.indexCount = idxCount;
+  }
+
+  /**
+   * Upload the moving brush entities' geometry into a second vertex/index
+   * buffer. The same interleaved 14-float layout as `uploadMap`.
+   */
+  uploadMovers(
+    memory: WebAssembly.Memory,
+    vertsPtr: number,
+    vertCount: number,
+    idxPtr: number,
+    idxCount: number,
+  ) {
+    const gl = this.gl;
+    if (!this.moverVao) {
+      this.moverVao = gl.createVertexArray();
+      this.moverVbo = gl.createBuffer();
+      this.moverIbo = gl.createBuffer();
+    }
+    if (idxCount === 0 || vertCount === 0) {
+      this.moverIndexCount = 0;
+      return;
+    }
+    gl.bindVertexArray(this.moverVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.moverVbo);
+    const v = new Float32Array(memory.buffer, vertsPtr, vertCount);
+    gl.bufferData(gl.ARRAY_BUFFER, v, gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.moverIbo);
+    const idx = new Uint32Array(memory.buffer, idxPtr, idxCount);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+    const stride = 14 * 4;
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, stride, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 2, gl.FLOAT, false, stride, 12);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2, 2, gl.FLOAT, false, stride, 20);
+    gl.enableVertexAttribArray(3);
+    gl.vertexAttribPointer(3, 3, gl.FLOAT, false, stride, 28);
+    gl.enableVertexAttribArray(4);
+    gl.vertexAttribPointer(4, 4, gl.FLOAT, false, stride, 40);
+    this.moverIndexCount = idxCount;
+  }
+
+  /** Set the mover draw chunks (each references a mover index for its matrix). */
+  setMoverChunks(chunks: MoverChunk[]) {
+    this.moverChunks = chunks;
   }
 
   /** Upload the packed RGB lightmap atlas (from WASM memory). */
@@ -401,62 +468,85 @@ export class Renderer {
     return id;
   }
 
-  draw(projView: Float32Array, eye: [number, number, number] = [0, 0, 0], time = 0) {
+  draw(
+    projView: Float32Array,
+    eye: [number, number, number] = [0, 0, 0],
+    time = 0,
+    moverMatrices: Float32Array[] = [],
+  ) {
     const gl = this.gl;
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     // Skybox first: it writes depth far away, so the world draws over it.
     this.drawSkybox(projView, eye);
-    if (this.indexCount === 0) return;
+    if (this.indexCount === 0 && this.moverIndexCount === 0) return;
     gl.bindVertexArray(this.vao);
 
     if (this.chunks.length === 0) {
       gl.useProgram(this.program);
       gl.uniformMatrix4fv(this.uProjView, false, projView);
+      gl.uniformMatrix4fv(this.uModel, false, IDENTITY);
       gl.uniform1f(this.uHasTexture, 0);
       gl.uniform1f(this.uLit, 1);
       gl.uniform2f(this.uScroll, 0, 0);
       gl.uniform1f(this.uTime, time);
       this.setBlend("opaque");
       gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_INT, 0);
-      gl.bindVertexArray(null);
-      return;
-    }
-
-    for (const c of this.chunks) {
-      // Base pass.
-      gl.useProgram(this.program);
-      gl.uniformMatrix4fv(this.uProjView, false, projView);
-      const baseId = this.pickAnim(c.tex, c.animFreq, time);
-      const baseTex = baseId !== null ? this.textures.get(baseId) : undefined;
-      if (baseTex) {
-        gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, baseTex);
-        gl.uniform1f(this.uHasTexture, 1);
-      } else {
-        gl.uniform1f(this.uHasTexture, 0);
-      }
-      gl.uniform1f(this.uLit, c.lit ? 1 : 0);
-      gl.uniform2f(this.uScroll, c.scroll[0], c.scroll[1]);
-      gl.uniform1f(this.uTime, time);
-      this.setBlend(c.blend);
-      gl.drawElements(gl.TRIANGLES, c.count, gl.UNSIGNED_INT, c.first * 4);
-
-      // Overlay passes (additive / blended / multiply).
-      for (const o of c.overlays) {
-        const otex = this.textures.get(o.tex);
-        if (!otex) continue;
-        gl.useProgram(this.fxProgram);
-        gl.uniformMatrix4fv(this.fxProjView, false, projView);
-        gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, otex);
-        gl.uniform2f(this.fxScroll, o.scroll[0], o.scroll[1]);
-        gl.uniform1f(this.fxTime, time);
-        this.setBlend(o.blend);
-        gl.drawElements(gl.TRIANGLES, c.count, gl.UNSIGNED_INT, c.first * 4);
+    } else {
+      for (const c of this.chunks) {
+        this.drawChunkBody(c, projView, time, IDENTITY);
       }
     }
+
+    // Moving brush entities, drawn from their own buffer with a per-mover
+    // model matrix.
+    if (this.moverVao && this.moverIndexCount > 0 && this.moverChunks.length > 0) {
+      gl.bindVertexArray(this.moverVao);
+      for (const c of this.moverChunks) {
+        const model = moverMatrices[c.model] ?? IDENTITY;
+        this.drawChunkBody(c, projView, time, model);
+      }
+    }
+
     gl.disable(gl.BLEND);
     gl.bindVertexArray(null);
+  }
+
+  /** Draw one chunk's base pass plus overlay passes with the given model matrix. */
+  private drawChunkBody(c: DrawChunk, projView: Float32Array, time: number, model: Float32Array) {
+    const gl = this.gl;
+    // Base pass.
+    gl.useProgram(this.program);
+    gl.uniformMatrix4fv(this.uProjView, false, projView);
+    gl.uniformMatrix4fv(this.uModel, false, model);
+    const baseId = this.pickAnim(c.tex, c.animFreq, time);
+    const baseTex = baseId !== null ? this.textures.get(baseId) : undefined;
+    if (baseTex) {
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, baseTex);
+      gl.uniform1f(this.uHasTexture, 1);
+    } else {
+      gl.uniform1f(this.uHasTexture, 0);
+    }
+    gl.uniform1f(this.uLit, c.lit ? 1 : 0);
+    gl.uniform2f(this.uScroll, c.scroll[0], c.scroll[1]);
+    gl.uniform1f(this.uTime, time);
+    this.setBlend(c.blend);
+    gl.drawElements(gl.TRIANGLES, c.count, gl.UNSIGNED_INT, c.first * 4);
+
+    // Overlay passes (additive / blended / multiply).
+    for (const o of c.overlays) {
+      const otex = this.textures.get(o.tex);
+      if (!otex) continue;
+      gl.useProgram(this.fxProgram);
+      gl.uniformMatrix4fv(this.fxProjView, false, projView);
+      gl.uniformMatrix4fv(this.fxModel, false, model);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, otex);
+      gl.uniform2f(this.fxScroll, o.scroll[0], o.scroll[1]);
+      gl.uniform1f(this.fxTime, time);
+      this.setBlend(o.blend);
+      gl.drawElements(gl.TRIANGLES, c.count, gl.UNSIGNED_INT, c.first * 4);
+    }
   }
 }
 

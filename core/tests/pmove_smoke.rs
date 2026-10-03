@@ -21,6 +21,8 @@ fn flat_world() -> World {
     // Brush has all 6 planes.
     let brush_plane_ids: Vec<u32> = (0..6).collect();
     World {
+        movers: vec![],
+        mover_plane_ids: vec![],
         brush_plane_offsets: vec![0],
         brush_plane_count: vec![6],
         brush_plane_ids,

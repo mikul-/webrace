@@ -22,6 +22,8 @@ fn overlay_world(_slick_first: bool) -> World {
     planes.extend(box_planes());
     // Two brushes, same 6 planes each. The slick one uses shader 1.
     World {
+        movers: vec![],
+        mover_plane_ids: vec![],
         brush_plane_offsets: vec![0, 6],
         brush_plane_count: vec![6, 6],
         brush_plane_ids: (0..12).collect(),

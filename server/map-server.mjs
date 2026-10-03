@@ -6,7 +6,7 @@
 
 import http from "node:http";
 import { readFile, readdir, mkdir, writeFile } from "node:fs/promises";
-import { join, basename } from "node:path";
+import { join, basename, extname } from "node:path";
 import { homedir } from "node:os";
 import { inflateRaw } from "node:zlib";
 import { promisify } from "node:util";
@@ -21,6 +21,24 @@ const PORT = Number(process.env.MAP_PORT || process.env.PORT || 4173);
 const PADPORK = "https://padpork.org";
 // Where downloaded padpork pk3s are cached (persists across restarts).
 const PK3_CACHE_DIR = process.env.PK3_CACHE_DIR || join(__dirname, ".pk3-cache");
+
+// Directory of drop-in sound files to audition (dev helper). Resolved from the
+// repo root (`server/..`) so the user can drop files into `snd/` at any time;
+// the `/sounds` endpoint lists them live (no restart needed).
+const SND_DIR = process.env.SND_DIR || join(__dirname, "..", "snd");
+
+const AUDIO_EXTS = new Set([".wav", ".mp3", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".flac", ".webm"]);
+const AUDIO_MIME = {
+  ".wav": "audio/wav",
+  ".mp3": "audio/mpeg",
+  ".ogg": "audio/ogg",
+  ".oga": "audio/ogg",
+  ".opus": "audio/ogg",
+  ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
+  ".flac": "audio/flac",
+  ".webm": "audio/webm",
+};
 
 // ---- minimal zip central-directory reader (pk3 files are zips) ----
 
@@ -439,6 +457,49 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // List the drop-in sound files under `snd/` (so the Sound menu can populate
+  // its dropdowns without a rebuild). No caching: the user drops files in live.
+  if (url.pathname === "/sounds") {
+    try {
+      const entries = await readdir(SND_DIR, { withFileTypes: true });
+      const files = entries
+        .filter((e) => e.isFile() && AUDIO_EXTS.has(extname(e.name).toLowerCase()))
+        .map((e) => e.name)
+        .sort((a, b) => a.localeCompare(b));
+      res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      res.end(JSON.stringify({ files }));
+    } catch {
+      // Directory may not exist (e.g. production container without sounds).
+      res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      res.end(JSON.stringify({ files: [] }));
+    }
+    return;
+  }
+
+  // Serve a drop-in sound file by name.
+  if (url.pathname.startsWith("/snd/")) {
+    const name = basename(decodeURIComponent(url.pathname.slice("/snd/".length)));
+    const full = join(SND_DIR, name);
+    // Guard against path traversal (basename already strips `..`, but be strict).
+    if (!name || !full.startsWith(SND_DIR)) {
+      res.writeHead(403).end("forbidden");
+      return;
+    }
+    try {
+      const bytes = await readFile(full);
+      const mime = AUDIO_MIME[extname(name).toLowerCase()] || "application/octet-stream";
+      res.writeHead(200, {
+        "Content-Type": mime,
+        "Content-Length": bytes.length,
+        "Cache-Control": "no-store",
+      });
+      res.end(bytes);
+    } catch {
+      res.writeHead(404).end("sound not found: " + name);
+    }
+    return;
+  }
+
   res.writeHead(404).end("not found");
 });
 
@@ -446,4 +507,5 @@ server.listen(PORT, () => {
   console.log(`[maps] serving on http://127.0.0.1:${PORT}/maps/<name>.bsp`);
   console.log(`[tex]  serving on http://127.0.0.1:${PORT}/tex/<shader-name>`);
   console.log(`[cat]  serving on http://127.0.0.1:${PORT}/catalog`);
+  console.log(`[snd]  drop-in sounds from ${SND_DIR} (/sounds, /snd/<file>)`);
 });

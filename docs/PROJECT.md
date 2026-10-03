@@ -109,5 +109,6 @@ forward-bunny: airforwardaccel 1.00001, bunnyaccel 0.1593, bunnytopspeed 925
 ## Known state / what's next
 
 See the "Current state" section in `docs/JOURNAL.md` — it lists what works,
-what's stubbed, and the ordered TODO list (bezier patch tessellation is the
-most-wanted next fix: it's why some curved maps have missing geometry).
+what's stubbed, and the ordered TODO list. Recently completed: `.shader` skybox/
+stage support and **moving brush entities** (bobbing/plat/door/train, with player
+carry). Next up: teleporter/entity visuals, then ghosts/replays.

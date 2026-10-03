@@ -1,0 +1,4 @@
+# Drop-in sound files for the Sound menu live here (dev only).
+# The `/sounds` map-server endpoint lists any audio files in this directory so
+# they can be assigned to game events without rebuilding. WAV/MP3/OGG/etc.
+# files are gitignored by default — commit curated sounds elsewhere.

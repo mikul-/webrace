@@ -25,7 +25,15 @@ reconstruct context without re-deriving it.
 - **Collision**: AABB hull trace against BSP brushes (exact pmove semantics), with
   fixes for start-solid boundary cases, wall wedging, inside-corner (>90°)
   sticking, coincident `common/slick` overlays, and **solid brush-model entities**
-  (`func_bobbing`/`func_plat`/... submodels added to the world).
+  (`func_*` submodels).
+- **Moving brush entities** (`func_bobbing` / `func_plat` / `func_door` /
+  `func_door_rotating` / `func_train` / `func_rotating` / `func_pendulum`):
+  parsed with their class keys, animated deterministically in the sim (not the
+  renderer), collided at their *current* transform, and they **carry the player**
+  (Qfusion `SV_Push` rider handling). Submodel faces are drawn from a separate
+  buffer with a per-mover model matrix (via the MODELS lump `firstface`/
+  `numfaces`). `func_plat` rises on contact, doors open on proximity, trains
+  follow their `path_corner` chain.
 - **BSP loading**: native QFusion/Quake3 `IBSP` v46 — geometry, textures, lightmaps,
   collision brushes, spawn points, and **race gates** (start/checkpoint/finish).
 - **Bezier patches** (`FACETYPE_PATCH`) — control-point grids tessellated into
@@ -50,6 +58,15 @@ reconstruct context without re-deriving it.
 - **Movement HUD**: acceleration bar (green gain/red loss) + strafe-jump triangle +
   bunny-hop marker (both sweet-spot indicators that shrink with speed).
 - **Live deployment** on TrueNAS (see `docs/deploy.md`).
+- **Sound system (first pass)**: a Settings → **Sound** tab with a master volume
+  slider and a dropdown per game event (jump, dash, wall dash, land, footstep,
+  jumppad, teleport, plus weapon/pickup placeholders). Dropdowns list the drop-in audio files under
+  `snd/` (served live by the map-server via `/sounds` + `/snd/<file>`, no
+  rebuild), each row has a ▶ preview button, and the assignment persists in
+  settings/share-code. The sim emits per-tick event bits (`EV_*` in
+  `core/src/lib.rs`) for jump/dash/walljump/land/footstep/jumppad/teleport and
+  `main.ts` plays the assigned file. Weapon sounds are assignable now but fire
+  once weapons exist.
 
 ### Stubbed / not yet built
 - **Shaders** (`.shader` scripts) — skybox, animated (`animmap`), additive
@@ -57,67 +74,58 @@ reconstruct context without re-deriving it.
   `tcMod rotate/scale/stretch`, `rgbGen wave`, `alphaGen`, portal/fog stages,
   and shader-only `surfaceparm` overrides for *collision* (rendering honors
   them via `buildPlan`).
-- **Moving brush entities** — solid brush models (`func_bobbing`, `func_plat`,
-  `func_door`, `func_train`, ...) are added to collision **statically at their base
-  position**; they don't animate/rotate yet (no riding moving platforms).
 - **Lightgrid** (`LUMP_LIGHTGRID`) — only static vertex color; no dynamic lightgrid
   sampling for entities.
 - **Visibility** (PVS/`LUMP_VISIBILITY`) — everything rendered every frame.
 - **Weapons** (rocket/plasma/grenade/lightning) — `attack` (Mouse0) is bound but no
   weapon logic.
-- **Footstep / impact / jumppad sounds** — no audio at all yet.
+- **Audio** — a settings/assignment + playback pass exists (see above), but the
+  weapon/pickup event hooks don't fire yet (placeholders), there's no volume
+  control, and no `snd/` sounds are bundled/committed (test files are
+  gitignored).
 - **Ghosts/replays**, **true multiplayer** (WebTransport), **practice mode**
   (noclip, position-save-anywhere).
 
 ## Ordered TODO (recommended next steps)
-1. **`.shader` parsing** — skybox (the biggest visual gap: maps currently show the
-   void where the sky should be), animated/emissive textures, transparent/multi-stage
-   materials. Also lets us resolve shader-only `surfaceparm slick` maps.
-2. **Move brush entities** (`func_bobbing`/`func_plat`/`func_door`/`func_train`) —
-   animate them and carry the player (riding platforms), instead of static collision.
-3. **Paired/one-way teleporters + jumppad models/sprites** (visuals for entities).
-4. **Ghosts / replays** — the deterministic sim makes recording/playback nearly free.
-5. **Weapons** (rocket/plasma/grenade/lightning).
-6. **Audio** (footsteps, jump/land, jumppad, weapon) and a sound system.
-7. **Perf**: PVS/`LUMP_VISIBILITY` culling, a collision BVH, lightgrid.
-8. **Multiplayer** (WebTransport) + **practice mode** (noclip, save-anywhere).
+1. **Paired/one-way teleporters + jumppad/entity models/sprites** (visuals for
+   entities; teleporter destination pairing).
+2. **Ghosts / replays** — the deterministic sim makes recording/playback nearly free.
+3. **Weapons** (rocket/plasma/grenade/lightning).
+4. **Audio** — first pass done (drop-in `snd/` menu + jump/dash/walljump/land/
+   footstep/jumppad/teleport). Remaining: volume control, weapon/pickup hooks
+   (blocked on weapons), and bundling curated sounds.
+5. **Perf**: PVS/`LUMP_VISIBILITY` culling, a collision BVH, lightgrid.
+6. **Multiplayer** (WebTransport) + **practice mode** (noclip, save-anywhere).
 
-## NEXT TASK — moving brush entities (`func_bobbing`/`func_plat`/`func_door`/`func_train`)
+## DONE — moving brush entities (`func_bobbing`/`func_plat`/`func_door`/`func_train`)
 
-Currently solid brush models are collision-only and **static at their base
-position** (see `parse_solid_brush_models` in `core/src/bsp.rs`). Goal: animate
-them in the deterministic sim and carry the player.
-
-Design notes / plan:
-- **Parse movers with their keys**, not just classname: `func_bobbing`
-  (`height`, `speed`, `phase`, `spawnflags`), `func_plat` (`height`, `speed`),
-  `func_door` (`angle`/`movedir`, `speed`, `wait`), `func_train` (targets a
-  chain of `path_corner`/`target_position` via `target`), `func_rotating`/
-  `func_pendulum`. Keep the submodel brush planes (already extracted) plus the
-  entity's base origin/angles.
-- **Deterministic animation in `pmove`/`sim`** (not the renderer): advance each
-  mover by `frametime` from its phase; compute its current origin offset (and
-  rotation for doors/rotating). Store movers in `World` (or `Session`).
-- **Collision with movers**: simplest is to treat each mover's brush planes as
-  translated by its current offset. Either (a) rebuild/re-transform brushes each
-  tick, or (b) add a per-brush offset the trace applies. Watch perf (few movers
-  per map, so (a) is fine).
-- **Carry the player** (Q3 `PM_CategorizePosition` / `PM_PlayerTrace` ground
-  entity): if the player is standing on a mover, add the mover's per-tick
-  position/rotation delta to the player origin. Also handle `func_plat`
-  triggering on touch and `func_door` opening.
-- **Renderer must match**: submodel faces are currently drawn at their baked
-  world position. Add a per-face (or per-submodel) model index so the renderer
-  can apply the mover's current transform (`origin` + `angle`). `dface_t` has no
-  model field, but `LUMP_FACES` is ordered by model and the MODELS lump gives
-  `firstface`/`numfaces` per submodel — map faces → submodel, then apply the
-  mover transform. (Alternatively re-upload the submodel vertex ranges each tick,
-  but a shader/model-matrix uniform is cheaper.)
-- **Gotchas**: keep the sim deterministic (no wall-clock); movers must tick in a
-  fixed order; the player must not fall through a platform that moves up into
-  them (crush handling can be minimal — push up).
-- **Tests**: a `func_plat` raises the player; a `func_bobbing` platform carries
-  the player; a moving platform doesn't let the player fall through.
+Implemented. Summary / where it lives:
+- **Parse** (`core/src/bsp.rs`): `parse_movers` reads each animated `func_*`
+  entity's keys (`origin`/`angle`/`angles`/`height`/`speed`/`phase`/`wait`/
+  `distance`/`spawnflags`/`target`), keeps the submodel brush plane run, and
+  follows the `path_corner`/`target_position` chain for `func_train`. Animated
+  movers are excluded from the static collision/render set.
+- **Animate** (`core/src/trace.rs`): runtime `Mover` with `advance()` ported from
+  Warfork `g_func.cpp` — bobbing `sin(2π·frac((t − speed·phase)/speed))`, plat
+  bottom→up→top→down FSM, door/rotating-door proximity FSM, train corner chase,
+  rotating/pendulum angle integration. The sim owns all of it (deterministic,
+  no wall clock).
+- **Collide** (`core/src/trace.rs`): mover brush planes are transformed per trace
+  (`world = origin + R(angles)·geometry`; plane `n' = R·n`,
+  `d' = d + n'·origin`, matching Qfusion `CM_TransformedBoxTrace`). `TraceResult`
+  reports the mover index that was hit.
+- **Carry** (`core/src/pmove.rs`): `ground_mover` is recorded by `grounded()`; at
+  tick start `advance_movers()` advances every mover and applies the Qfusion
+  `SV_Push` rider delta (`origin += Δ`, rotate about the mover origin by Δangles,
+  add yaw).
+- **Render** (`core/src/bsp.rs` + `bindings.rs` + `web/src/render/renderer.ts` +
+  `web/src/main.ts`): `dface_t` has no model field, so faces are mapped to a
+  submodel via the MODELS lump `firstface`/`numfaces` (dmodel_t bytes 24/28).
+  Mover faces are emitted into a **separate** vertex/index buffer; the renderer
+  draws them with a `u_model` uniform (origin + `AnglesToAxis` columns).
+- **Tests** (`core/tests/movers.rs`): real-map parse (`BardoK-Strafe1` → 6
+  `func_bobbing`), bobbing carries the player, plat raises the player, no
+  fall-through, door opens/closes, rotating door turns about yaw.
 
 ---
 
@@ -266,6 +274,107 @@ Design notes / plan:
   the collision world at their base position. Triggers (`trigger_*`) are not
   affected (they are handled separately). Moving/animation is not modelled yet
   (`func_bobbing` is static at its base, matching our static rendering).
+
+### Moving brush entities implementation (Warfork-faithful transform + carry)
+- The key insight from Qfusion `CM_TransformedBoxTrace`: for inline models the
+  BSP brush/vertex geometry is in the entity's **local frame**, and the engine
+  applies `world = origin + R(angles)·geometry`. A plane transforms as
+  `n' = R·n`, `d' = d + n'·origin`. `func_bobbing` entities on `BardoK-Strafe1`
+  have no `origin` key and absolute geometry, so `origin` starts at 0 and the
+  bob is a pure translation; origin-brush doors/rotating entities store local
+  geometry and a nonzero `origin` (rotation pivot). One formula covers both.
+- Movers are **not** appended to the static world brush arrays anymore. The
+  trace runs static brushes first, then each mover's planes transformed per
+  trace. `TraceResult.mover` (index, `-1` = static) feeds `grounded()`, which
+  stores `PlayerState.ground_mover`.
+- Carry is `Pmove::advance_movers` at the top of `step`: advance every mover,
+  then if the player is grounded on mover `i`, add its per-tick origin delta and
+  rotate the player about the mover origin by the angle delta (`SV_Push`), plus
+  the yaw carry. A platform rising into the player is handled by the existing
+  `start_solid`/`resolve_solid` push-up.
+- `dmodel_t` is 40 bytes with `firstface`/`numfaces` at offsets **24/28** (not
+  32/36, which are `firstbrush`/`numbrushes`) — the renderer maps each face to
+  its submodel with these, then every face of a mover submodel goes into a
+  separate mover vertex/index buffer. Renderer applies a `u_model` matrix
+  (columns = `AnglesToAxis` rows; translation = current origin).
+- `G_SetMovedir` gotcha: `angle == 0` is **not** zero movement — it is yaw 0 →
+  `[1,0,0]` via `AngleVectors`. Only `-1`/`-2` mean up/down. Do not special-case
+  0 to a zero vector or every un-angled door silently stops moving.
+- Door/plat proximity tests use the **authored** position (`base_origin`), not
+  the current one: otherwise an opened door slides out of its own trigger and
+  immediately closes. (Warfork spawns a separate static trigger volume.)
+- `func_door_rotating` derives its axis from spawnflags (default yaw/Z), not the
+  `angle` key; `func_rotating` axes: `&4` roll, `&8` pitch, else yaw, `&2`
+  reverses.
+- Tests in `core/tests/movers.rs` cover parse (real map), bobbing carry, plat
+  rise, no fall-through, door open/close, rotating door.
+- **Known simplifications** (fine for race/defrag; revisit if needed): doors open
+  on player proximity rather than via their spawned trigger/button (`targetname`)
+  wiring; a targeted `func_plat` still starts lowered rather than waiting at the
+  top for a trigger; door/plat crush damage is not applied (the player is just
+  pushed out). `func_button` is still static collision.
+
+### Mover transform was a Y-mirror (Q3 `AnglesToAxis` right-vector sign)
+- Symptom: on `BardoK-Strafe1` the `func_bobbing` boxes vanished and the player
+  fell through into the water — a regression from extracting movers.
+- Cause: `angles_to_axis` was a verbatim `AnglesToAxis`, whose second vector
+  `right = forward × up` is `-Y` at zero angles (a *left*-handed basis). Using it
+  as the rotation matrix made a zero-angle mover a reflection across Y. The real
+  boxes (y `-288..-200`, no origin key, zero angles) were mirrored to y
+  `200..288` — off the water and away from where you'd land. Collision and
+  rendering both used it, so both broke together.
+- Why the synthetic tests missed it: they used boxes symmetric in Y (`±128`),
+  which map onto themselves under a Y mirror.
+- Fix: negate the middle (`right`) basis vector in `angles_to_axis` so zero
+  angles → identity and the transform is a proper right-handed rotation
+  (`Rz(yaw)`), matching the camera's yaw convention. `transform_plane`, the
+  renderer columns, and the `SV_Push` carry all use this one function, so they
+  stay consistent.
+- Regression tests: `real_map_bobbing_boxes_have_collision` (down-trace hits
+  mover 0, player settles at z≈48) and `zero_angle_rotation_is_identity`
+  (identity at 0; +90° yaw maps +X→+Y).
+
+### Sound system (drop-in `snd/` files + per-event assignment)
+- The browser can't list a directory, so the **map-server** gained
+  `GET /sounds` (JSON list of audio files in `snd/`, no-store) and
+  `GET /snd/<file>` (served with the right MIME, no-store so replacing a file
+  with the same name is picked up). `web/vite.config.ts` proxies both in dev.
+  `SND_DIR = server/.. /snd` (dev) / `/app/snd` (container; `Dockerfile.backend`
+  copies it). The endpoint returns `{files:[]}` if the dir is missing.
+- WAV/MP3/OGG/etc. under `snd/` are **gitignored** (`/snd/*`, `!/snd/.gitkeep`)
+  so large test assets never get committed (the repo once had a 192 MB zip
+  incident). Commit curated sounds elsewhere if they need to ship.
+- Assignments live in `Settings.sounds` (event id → file name), persisted and
+  included in the share code for free. The **Sound tab** (`web/index.html` +
+  `Menu.renderSounds`) builds one `<select>` + ▶ preview per `SOUND_EVENTS` entry
+  (`web/src/audio.ts`), and a *Reload file list* button re-fetches without a
+  page reload.
+- Gameplay sounds come from **sim event bits**, not guessed client state:
+  `Pmove.events` (`EV_JUMP/DASH/WALLJUMP/LAND/FOOTSTEP/JUMPPAD/TELEPORT` in
+  `core/src/lib.rs`), reset each tick, returned by the now-`u32`
+  `session_step`. `main.ts` ORs the bits across the frame's fixed ticks and
+  `SoundManager.handleBits` plays them. Land uses `was_ground` captured at the
+  top of `step`; footsteps accumulate 60 units of ground speed. Bit order is
+  mirrored in `web/src/audio.ts` — keep the two in sync.
+- Playback uses the **Web Audio API**: each one-shot is a fresh
+  `AudioBufferSource` from a decoded+cached `AudioBuffer` (context created and
+  resumed on the first pointer/key via `SoundManager.unlock()`). The first cut
+  used pooled `HTMLAudioElement`s, but switching files could leave the pool in a
+  state where `play()` silently did nothing (real-browser flakiness, hard to
+  reproduce headless); Web Audio fixed it and gives reliable overlap.
+- Defaults: `jump → FS Ground Civilian Walk N05.wav`,
+  `dash`/`walljump → FS Ground Civilian Walk N03.wav`. A one-time
+  `soundVersion` migration in `loadSettings` re-applies those onto existing
+  installs so testers see them without clearing localStorage.
+- **Master volume**: a 0..1 slider in the Sound tab (`Settings.volume`, default
+  0.8) feeds `SoundManager.setVolume` → the master `GainNode`; if the slider is
+  moved before the context exists, the value is stored and applied on unlock.
+- Debugging gotcha: headless Chromium needs `HOME`/`XDG_CONFIG_HOME` pointed at a
+  writable dir or it crash-loops before opening the DevTools port (the machine's
+  `~/.config/chromium` was on a broken mount).
+- **Deploy gotcha**: if `snd/` ever ships, Caddy needs `/webrace/sounds` and
+  `/webrace/snd/*` → `192.168.0.107:4173` proxy rules (added to the reference
+  `deploy/Caddyfile`; must be applied to the live Caddyfile like the shader rule).
 
 ### Smooth crouch transition (Warfork `PM_AdjustBBox`)
 - Crouch was instantaneous (box snapped 40 -> 16). Ported Warfork's transition:

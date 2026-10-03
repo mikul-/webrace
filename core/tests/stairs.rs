@@ -51,6 +51,8 @@ fn stair_world() -> World {
         p += 6;
     }
     World {
+        movers: vec![],
+        mover_plane_ids: vec![],
         brush_plane_offsets: offsets,
         brush_plane_count: counts,
         brush_plane_ids: idx,

@@ -8,9 +8,18 @@ export interface Settings {
   crosshairColor: string;
   crosshairSize: number;
   binds: BindMap;
+  /** Master sound volume, 0..1. */
+  volume: number;
+  /** Sound event id -> file name under `snd/` (or absent for none). */
+  sounds: Record<string, string>;
+  /** Bumped when new default sound assignments should be re-applied once. */
+  soundVersion: number;
 }
 
 const KEY = "webrace.settings";
+
+/** Bump to force the defaults below onto existing installs (one time). */
+const SOUND_VERSION = 2;
 
 const DEFAULTS: Settings = {
   fov: 125,
@@ -18,6 +27,13 @@ const DEFAULTS: Settings = {
   crosshairColor: "#fa00ff",
   crosshairSize: 18,
   binds: { ...DEFAULT_BINDS },
+  volume: 0.8,
+  sounds: {
+    jump: "FS Ground Civilian Walk N05.wav",
+    dash: "FS Ground Civilian Walk N03.wav",
+    walljump: "FS Ground Civilian Walk N03.wav",
+  },
+  soundVersion: SOUND_VERSION,
 };
 
 function clamp(v: number, min: number, max: number): number {
@@ -26,7 +42,11 @@ function clamp(v: number, min: number, max: number): number {
 
 /** Load settings from localStorage (with validation/clamping). */
 export function loadSettings(): Settings {
-  let s: Settings = { ...DEFAULTS, binds: { ...DEFAULT_BINDS } };
+  let s: Settings = {
+    ...DEFAULTS,
+    binds: { ...DEFAULT_BINDS },
+    sounds: { ...DEFAULTS.sounds },
+  };
   try {
     const raw = localStorage.getItem(KEY);
     if (raw) {
@@ -39,10 +59,26 @@ export function loadSettings(): Settings {
             ? parsed.crosshairColor
             : DEFAULTS.crosshairColor;
         s.crosshairSize = clamp(Number(parsed.crosshairSize) || DEFAULTS.crosshairSize, 4, 64);
+        s.volume =
+          typeof parsed.volume === "number" ? clamp(parsed.volume, 0, 1) : DEFAULTS.volume;
         if (parsed.binds && typeof parsed.binds === "object") {
           // Merge with defaults so missing binds fall back.
           s.binds = { ...DEFAULT_BINDS, ...parsed.binds };
         }
+        if (parsed.sounds && typeof parsed.sounds === "object") {
+          // Overlay saved choices on the defaults (missing events keep theirs).
+          for (const [k, v] of Object.entries(parsed.sounds)) {
+            if (typeof v === "string" && v) s.sounds[k] = v;
+          }
+        }
+        // One-time migration: force the requested defaults for existing installs.
+        const parsedVersion = typeof parsed.soundVersion === "number" ? parsed.soundVersion : 0;
+        if (parsedVersion < SOUND_VERSION) {
+          s.sounds.jump = DEFAULTS.sounds.jump;
+          s.sounds.dash = DEFAULTS.sounds.dash;
+          s.sounds.walljump = DEFAULTS.sounds.walljump;
+        }
+        s.soundVersion = SOUND_VERSION;
       }
     }
   } catch {
