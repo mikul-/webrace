@@ -82,6 +82,43 @@ reconstruct context without re-deriving it.
 7. **Perf**: PVS/`LUMP_VISIBILITY` culling, a collision BVH, lightgrid.
 8. **Multiplayer** (WebTransport) + **practice mode** (noclip, save-anywhere).
 
+## NEXT TASK — moving brush entities (`func_bobbing`/`func_plat`/`func_door`/`func_train`)
+
+Currently solid brush models are collision-only and **static at their base
+position** (see `parse_solid_brush_models` in `core/src/bsp.rs`). Goal: animate
+them in the deterministic sim and carry the player.
+
+Design notes / plan:
+- **Parse movers with their keys**, not just classname: `func_bobbing`
+  (`height`, `speed`, `phase`, `spawnflags`), `func_plat` (`height`, `speed`),
+  `func_door` (`angle`/`movedir`, `speed`, `wait`), `func_train` (targets a
+  chain of `path_corner`/`target_position` via `target`), `func_rotating`/
+  `func_pendulum`. Keep the submodel brush planes (already extracted) plus the
+  entity's base origin/angles.
+- **Deterministic animation in `pmove`/`sim`** (not the renderer): advance each
+  mover by `frametime` from its phase; compute its current origin offset (and
+  rotation for doors/rotating). Store movers in `World` (or `Session`).
+- **Collision with movers**: simplest is to treat each mover's brush planes as
+  translated by its current offset. Either (a) rebuild/re-transform brushes each
+  tick, or (b) add a per-brush offset the trace applies. Watch perf (few movers
+  per map, so (a) is fine).
+- **Carry the player** (Q3 `PM_CategorizePosition` / `PM_PlayerTrace` ground
+  entity): if the player is standing on a mover, add the mover's per-tick
+  position/rotation delta to the player origin. Also handle `func_plat`
+  triggering on touch and `func_door` opening.
+- **Renderer must match**: submodel faces are currently drawn at their baked
+  world position. Add a per-face (or per-submodel) model index so the renderer
+  can apply the mover's current transform (`origin` + `angle`). `dface_t` has no
+  model field, but `LUMP_FACES` is ordered by model and the MODELS lump gives
+  `firstface`/`numfaces` per submodel — map faces → submodel, then apply the
+  mover transform. (Alternatively re-upload the submodel vertex ranges each tick,
+  but a shader/model-matrix uniform is cheaper.)
+- **Gotchas**: keep the sim deterministic (no wall-clock); movers must tick in a
+  fixed order; the player must not fall through a platform that moves up into
+  them (crush handling can be minimal — push up).
+- **Tests**: a `func_plat` raises the player; a `func_bobbing` platform carries
+  the player; a moving platform doesn't let the player fall through.
+
 ---
 
 ## History / decisions / gotchas
