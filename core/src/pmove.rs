@@ -109,6 +109,9 @@ pub struct Pmove {
     /// Current player box (updated each tick from crouch state).
     pub mins: [f32; 3],
     pub maxs: [f32; 3],
+    /// Height stepped up this tick (Warfork `pm->step`), for view smoothing.
+    /// 0 when no step occurred.
+    pub step: f32,
 }
 
 impl Pmove {
@@ -126,6 +129,7 @@ impl Pmove {
             max_player_speed: 320.0,
             mins: crate::trace::PLAYER_MINS,
             maxs: crate::trace::PLAYER_MAXS,
+            step: 0.0,
         }
     }
 
@@ -340,6 +344,7 @@ impl Pmove {
 
     /// Advance one tick.
     pub fn step(&mut self, ps: &mut PlayerState, cmd: &Cmd) {
+        self.step = 0.0;
         let special = cmd.buttons & crate::input::BUTTON_SPECIAL != 0;
         let jump = cmd.buttons & crate::input::BUTTON_JUMP != 0;
         let crouch = cmd.buttons & crate::input::BUTTON_CROUCH != 0;
@@ -941,6 +946,13 @@ impl Pmove {
             ps.origin = down_o;
             ps.velocity = down_v;
             return;
+        }
+
+        // A step was taken: record the height for view smoothing (Warfork
+        // `pm->step = pmove.origin[2] - previous_origin[2]`).
+        let dz = ps.origin[2] - start_o[2];
+        if dz > 0.0 {
+            self.step = dz;
         }
 
         // Preserve speed when sliding up ramps (Warfork PM_StepSlideMove).

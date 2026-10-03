@@ -70,7 +70,15 @@ pub struct Session {
     /// start line), not past it.
     start_axis: usize,
     start_sign: f32,
+    /// Stair-step view smoothing (Warfork `CG_PredictAddStep` /
+    /// `CG_ViewSmoothPredictedSteps`). `step_change` is the pending step height
+    /// and `step_time` the ms elapsed since it happened.
+    step_change: f32,
+    step_time: f32,
 }
+
+/// Warfork `PREDICTED_STEP_TIME` (ms): how long a stair step eases the view.
+const PREDICTED_STEP_TIME: f32 = 150.0;
 
 impl Session {
     pub fn new(bsp: &Bsp, spawn_index: usize) -> Result<Session, String> {
@@ -151,6 +159,8 @@ impl Session {
             save_zone,
             start_axis,
             start_sign,
+            step_change: 0.0,
+            step_time: PREDICTED_STEP_TIME,
         })
     }
 
@@ -164,6 +174,8 @@ impl Session {
         self.ps.crouchtime = 0.0;
         self.ps.crouched = false;
         self.ps.viewheight = crate::pmove::STAND_VIEWHEIGHT;
+        self.step_change = 0.0;
+        self.step_time = PREDICTED_STEP_TIME;
         self.ps.on_ground = false;
         self.ps.special_held = false;
         self.ps.jump_held = false;
@@ -249,6 +261,21 @@ impl Session {
         ];
 
         self.pmove.step(&mut self.ps, &cmd);
+
+        // Stair-step view smoothing (Warfork `CG_PredictAddStep`): carry over
+        // the not-yet-eased part of the previous step, then add this step's
+        // height. The view eases up over `PREDICTED_STEP_TIME` ms.
+        let msec = 1000.0 / crate::TICK_RATE as f32;
+        self.step_time += msec;
+        if self.pmove.step != 0.0 {
+            let old = if self.step_time < PREDICTED_STEP_TIME {
+                self.step_change * (PREDICTED_STEP_TIME - self.step_time) / PREDICTED_STEP_TIME
+            } else {
+                0.0
+            };
+            self.step_change = old + self.pmove.step;
+            self.step_time = 0.0;
+        }
 
         // Race timer: advance and detect gate passes.
         if self.race.running && !self.race.finished {
@@ -344,10 +371,17 @@ impl Session {
     /// the player origin; `viewheight` is smoothly interpolated between stand
     /// (30) and crouch (12) by `PM_AdjustBBox`, so the crouch camera eases down.
     pub fn eye(&self) -> [f32; 3] {
+        // Stair-step smoothing: while a step is easing, the view sits below the
+        // new position and rises to it (Warfork `CG_ViewSmoothPredictedSteps`).
+        let step_offset = if self.step_time < PREDICTED_STEP_TIME {
+            -self.step_change * (PREDICTED_STEP_TIME - self.step_time) / PREDICTED_STEP_TIME
+        } else {
+            0.0
+        };
         [
             self.ps.origin[0],
             self.ps.origin[1],
-            self.ps.origin[2] + self.ps.viewheight,
+            self.ps.origin[2] + self.ps.viewheight + step_offset,
         ]
     }
 

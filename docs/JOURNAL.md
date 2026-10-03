@@ -148,6 +148,17 @@ reconstruct context without re-deriving it.
      discarded and the player stuck with the blocked slide. Q3 compares
      **horizontal** distance (`down_dist` vs `up_dist`). Fixed to match.
 
+### Stair-step view smoothing (Warfork `CG_PredictAddStep`)
+- Climbing a step snapped the camera up abruptly. Ported Warfork's stair
+  smoothing: `PM_StepSlideMove` records the step height (`pm.step`), and the
+  client carries over the un-eased part of the previous step, adds the new one,
+  and offsets the view **down** by it, easing to zero over
+  `PREDICTED_STEP_TIME = 150` ms (`CG_ViewSmoothPredictedSteps`). Only the
+  *view* is smoothed — collision still snaps up so you climb correctly.
+- `PlayerState`/`Pmove` gained `step`; `Session` gained `step_change`/`step_time`
+  and `eye()` applies the offset. Regression test `step_smooth.rs` (a 16-unit
+  step produces a 16-unit view offset that eases back to 0).
+
 ### Falling through brush-model entities (func_bobbing platforms)
 - On `BardoK-Strafe1` the player fell through a platform "floating on the water".
   The platform is a **`func_bobbing` brush-model entity** (`model "*4"`), i.e.
