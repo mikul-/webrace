@@ -52,9 +52,11 @@ reconstruct context without re-deriving it.
 - **Live deployment** on TrueNAS (see `docs/deploy.md`).
 
 ### Stubbed / not yet built
-- **Shaders** (`.shader` scripts) — **partially done**: skybox renders. Still
-  missing: animated (`animmap`) textures, emissive/additive and transparent
-  (`blendfunc`) materials, `tcMod`, shader-only `surfaceparm` overrides.
+- **Shaders** (`.shader` scripts) — skybox, animated (`animmap`), additive
+  (emissive) and alpha-blended stages, and `tcMod scroll`. Still missing:
+  `tcMod rotate/scale/stretch`, `rgbGen wave`, `alphaGen`, portal/fog stages,
+  and shader-only `surfaceparm` overrides for *collision* (rendering honors
+  them via `buildPlan`).
 - **Moving brush entities** — solid brush models (`func_bobbing`, `func_plat`,
   `func_door`, `func_train`, ...) are added to collision **statically at their base
   position**; they don't animate/rotate yet (no riding moving platforms).
@@ -170,6 +172,22 @@ reconstruct context without re-deriving it.
      ledge corner at foot level) advances X without changing Z, so it was
      discarded and the player stuck with the blocked slide. Q3 compares
      **horizontal** distance (`down_dist` vs `up_dist`). Fixed to match.
+
+### Shader stages: animated / emissive / transparent / scroll
+- `shader.ts` now parses `tcMod scroll` and full `blendfunc` operands, and
+  `buildPlan()` normalizes a shader into a **base pass** (`lit` unless
+  `surfaceparm nolightmap`; `animmap` frame cycle; base blend) plus **overlay
+  passes** (additive `GL_ONE/GL_ONE`, alpha `blend`, multiply `GL_DST_COLOR/
+  GL_ZERO`).
+- map-server gained bulk `GET /shaders?names=a,b,c` (JSON name→block) so the
+  client fetches all of a map's shaders in one request.
+- renderer: base fragment shader gained `u_lit` (lightmap on/off), `u_uv_scroll`
+  + `u_time` (tcMod scroll) and alpha output; a new **FX program** draws overlay
+  stages with blend modes; draw chunks now carry anim frame ids and overlays.
+- `main.ts` bulk-loads shader defs, builds per-shader plans, and registers the
+  anim/overlay textures.
+- Deploy: added `.dockerignore` and forced `docker compose build --no-cache` for
+  the backend (NFS could make the `COPY server/` layer look unchanged).
 
 ### `.shader` parsing + skybox
 - Added `.shader` script support (first slice of the shader feature):
