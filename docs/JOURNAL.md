@@ -52,8 +52,9 @@ reconstruct context without re-deriving it.
 - **Live deployment** on TrueNAS (see `docs/deploy.md`).
 
 ### Stubbed / not yet built
-- **Shaders** (`.shader` scripts) — not parsed at all. No animated textures, emissive
-  glows, multi-stage materials, or skybox.
+- **Shaders** (`.shader` scripts) — **partially done**: skybox renders. Still
+  missing: animated (`animmap`) textures, emissive/additive and transparent
+  (`blendfunc`) materials, `tcMod`, shader-only `surfaceparm` overrides.
 - **Moving brush entities** — solid brush models (`func_bobbing`, `func_plat`,
   `func_door`, `func_train`, ...) are added to collision **statically at their base
   position**; they don't animate/rotate yet (no riding moving platforms).
@@ -169,6 +170,24 @@ reconstruct context without re-deriving it.
      ledge corner at foot level) advances X without changing Z, so it was
      discarded and the player stuck with the blocked slide. Q3 compares
      **horizontal** distance (`down_dist` vs `up_dist`). Fixed to match.
+
+### `.shader` parsing + skybox
+- Added `.shader` script support (first slice of the shader feature):
+  - map-server `GET /shader?name=<name>` resolves a shader block by scanning the
+    current map pk3 (`currentPk3`, searched first — map pk3s usually bundle their
+    shaders) then local pk3s, caching a per-pk3 name index. **Note: Caddy needs a
+    `/webrace/shader*` proxy rule** (added to `deploy/Caddyfile`; must be applied
+    to the live Caddyfile).
+  - client `web/src/render/shader.ts` parses the block (surfaceparm, skyparms,
+    stages) — brace-aware tokenizer.
+  - WASM `bsp_shader_flags` exposes per-shader surface flags so JS can find
+    `SURF_SKY`.
+  - renderer builds a skybox from the `skyparms` base (Q3 `rt/bk/lf/ft/up/dn`
+    face order via `MakeSkyVec`) and draws it first (writes depth far away, world
+    draws over it).
+- **Deploy gotcha:** `docker compose up --build` served a *cached* `COPY server/`
+  layer, so the container ran old server code. Force with `docker compose build
+  --no-cache webrace` when server code changes.
 
 ### Stair-step view smoothing (Warfork `CG_PredictAddStep`)
 - Climbing a step snapped the camera up abruptly. Ported Warfork's stair
