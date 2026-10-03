@@ -392,6 +392,31 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // Bulk shader lookup: `/shaders?names=a,b,c` -> JSON { name: block }.
+  // Chunk the input so a huge name list doesn't blow the URL length.
+  if (url.pathname === "/shaders") {
+    const names = (url.searchParams.get("names") || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    try {
+      const out = {};
+      for (const n of names) {
+        const block = await resolveShader(n);
+        if (block) out[n] = block;
+      }
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Cache-Control": "public, max-age=86400",
+      });
+      res.end(JSON.stringify(out));
+      return;
+    } catch (e) {
+      res.writeHead(500).end("error: " + e.message);
+      return;
+    }
+  }
+
   if (url.pathname.startsWith("/tex/")) {
     const shaderName = decodeURIComponent(url.pathname.slice("/tex/".length));
     try {

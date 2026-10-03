@@ -2,6 +2,21 @@
 // entities. Kept allocation-light for the 360fps target: buffers are created
 // once per map and reused.
 
+import type { BlendMode } from "./shader";
+
+/** A draw chunk: a base pass plus additive/blended overlay passes. */
+export interface DrawChunk {
+  first: number;
+  count: number;
+  /** Base texture ids (animmap frames), or [] for untextured. */
+  tex: number[];
+  animFreq: number;
+  blend: BlendMode;
+  lit: boolean;
+  scroll: [number, number];
+  overlays: Array<{ tex: number; blend: BlendMode; scroll: [number, number] }>;
+}
+
 export class Renderer {
   gl: WebGL2RenderingContext;
   private program: WebGLProgram;
@@ -11,12 +26,20 @@ export class Renderer {
   private indexCount = 0;
   private uProjView: WebGLUniformLocation;
   private uHasTexture: WebGLUniformLocation;
+  private uLit: WebGLUniformLocation;
+  private uScroll: WebGLUniformLocation;
+  private uTime: WebGLUniformLocation;
+  // Overlay (FX) program.
+  private fxProgram: WebGLProgram;
+  private fxProjView: WebGLUniformLocation;
+  private fxScroll: WebGLUniformLocation;
+  private fxTime: WebGLUniformLocation;
   private lightmapTex: WebGLTexture;
   private whiteTex: WebGLTexture;
   private textures: Map<number, WebGLTexture>;
   private texCount: number;
-  /** Draw chunks: (firstIndex, indexCount, textureId). */
-  private chunks: Array<{ first: number; count: number; tex: number }> = [];
+  /** Draw chunks: base pass + additive/blended overlays. */
+  private chunks: DrawChunk[] = [];
 
   // Skybox.
   private skyProgram: WebGLProgram | null = null;
@@ -57,16 +80,24 @@ export class Renderer {
       uniform sampler2D u_texture;
       uniform sampler2D u_lightmap;
       uniform float u_has_texture;
+      uniform float u_lit;
+      uniform vec2 u_scroll;
+      uniform float u_time;
       out vec4 outColor;
       void main() {
+        vec4 tex = texture(u_texture, v_uv + u_scroll * u_time);
         // Surface albedo (from texture) or a neutral gray fallback.
-        vec3 albedo = mix(vec3(0.62), texture(u_texture, v_uv).rgb, u_has_texture);
-        // Baked lightmap: stored dark, meant to multiply the albedo.
-        vec3 lm = texture(u_lightmap, v_lm).rgb;
-        // Overbright in the style of Q3 (r_overbrightBits ~2) + gamma lift.
-        vec3 base = albedo * lm * 4.0;
-        base = pow(clamp(base, 0.0, 1.0), vec3(0.72));
-        outColor = vec4(base, 1.0);
+        vec3 albedo = mix(vec3(0.62), tex.rgb, u_has_texture);
+        float alpha = mix(1.0, tex.a, u_has_texture);
+        if (u_lit > 0.5) {
+          // Baked lightmap: stored dark, meant to multiply the albedo.
+          vec3 lm = texture(u_lightmap, v_lm).rgb;
+          // Overbright in the style of Q3 (r_overbrightBits ~2) + gamma lift.
+          vec3 base = albedo * lm * 4.0;
+          outColor = vec4(pow(clamp(base, 0.0, 1.0), vec3(0.72)), alpha);
+        } else {
+          outColor = vec4(albedo, alpha);
+        }
       }`;
 
     this.program = this.link(vs, fs);
@@ -74,10 +105,43 @@ export class Renderer {
 
     this.uProjView = gl.getUniformLocation(this.program, "u_proj_view")!;
     this.uHasTexture = gl.getUniformLocation(this.program, "u_has_texture")!;
+    this.uLit = gl.getUniformLocation(this.program, "u_lit")!;
+    this.uScroll = gl.getUniformLocation(this.program, "u_scroll")!;
+    this.uTime = gl.getUniformLocation(this.program, "u_time")!;
     const uLightmap = gl.getUniformLocation(this.program, "u_lightmap");
     const uTexture = gl.getUniformLocation(this.program, "u_texture");
     if (uLightmap) gl.uniform1i(uLightmap, 0);
     if (uTexture) gl.uniform1i(uTexture, 1);
+
+    // Overlay (FX) program for additive/blended shader stages.
+    const fxVs = `#version 300 es
+      layout(location=0) in vec3 a_pos;
+      layout(location=1) in vec2 a_uv;
+      layout(location=4) in vec4 a_color;
+      uniform mat4 u_proj_view;
+      out vec2 v_uv; out vec4 v_color;
+      void main() {
+        gl_Position = u_proj_view * vec4(a_pos, 1.0);
+        v_uv = a_uv; v_color = a_color;
+      }`;
+    const fxFs = `#version 300 es
+      precision highp float;
+      in vec2 v_uv; in vec4 v_color;
+      uniform sampler2D u_texture;
+      uniform vec2 u_scroll;
+      uniform float u_time;
+      out vec4 outColor;
+      void main() {
+        outColor = texture(u_texture, v_uv + u_scroll * u_time) * v_color;
+      }`;
+    this.fxProgram = this.link(fxVs, fxFs);
+    this.fxProjView = gl.getUniformLocation(this.fxProgram, "u_proj_view")!;
+    this.fxScroll = gl.getUniformLocation(this.fxProgram, "u_scroll")!;
+    this.fxTime = gl.getUniformLocation(this.fxProgram, "u_time")!;
+    gl.useProgram(this.fxProgram);
+    const fxTex = gl.getUniformLocation(this.fxProgram, "u_texture");
+    if (fxTex) gl.uniform1i(fxTex, 1);
+    gl.useProgram(this.program);
 
     // Lightmap atlas texture (unit 0).
     this.lightmapTex = gl.createTexture()!;
@@ -177,9 +241,29 @@ export class Renderer {
     this.gl.viewport(0, 0, w, h);
   }
 
-  /** Set the draw chunks (first index, count, texture id) for this map. */
-  setChunks(chunks: Array<{ first: number; count: number; tex: number }>) {
+  /** Set the draw chunks (base pass + overlays) for this map. */
+  setChunks(chunks: DrawChunk[]) {
     this.chunks = chunks;
+  }
+
+  /** Pick the current animmap frame texture id for `time` seconds. */
+  private pickAnim(ids: number[], freq: number, time: number): number | null {
+    if (!ids.length) return null;
+    if (ids.length === 1 || freq <= 0) return ids[0];
+    const frame = Math.floor(time * freq) % ids.length;
+    return ids[frame];
+  }
+
+  private setBlend(mode: BlendMode) {
+    const gl = this.gl;
+    if (mode === "opaque") {
+      gl.disable(gl.BLEND);
+      return;
+    }
+    gl.enable(gl.BLEND);
+    if (mode === "add") gl.blendFunc(gl.ONE, gl.ONE);
+    else if (mode === "blend") gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    else if (mode === "filter") gl.blendFunc(gl.DST_COLOR, gl.ZERO);
   }
 
   /**
@@ -303,33 +387,61 @@ export class Renderer {
     return id;
   }
 
-  draw(projView: Float32Array, eye: [number, number, number] = [0, 0, 0]) {
+  draw(projView: Float32Array, eye: [number, number, number] = [0, 0, 0], time = 0) {
     const gl = this.gl;
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     // Skybox first: it writes depth far away, so the world draws over it.
     this.drawSkybox(projView, eye);
     if (this.indexCount === 0) return;
-    gl.useProgram(this.program);
-    gl.uniformMatrix4fv(this.uProjView, false, projView);
     gl.bindVertexArray(this.vao);
 
     if (this.chunks.length === 0) {
-      // Fallback: draw everything with no texture.
+      gl.useProgram(this.program);
+      gl.uniformMatrix4fv(this.uProjView, false, projView);
       gl.uniform1f(this.uHasTexture, 0);
+      gl.uniform1f(this.uLit, 1);
+      gl.uniform2f(this.uScroll, 0, 0);
+      gl.uniform1f(this.uTime, time);
+      this.setBlend("opaque");
       gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_INT, 0);
-    } else {
-      for (const c of this.chunks) {
-        const tex = this.textures.get(c.tex);
-        if (tex) {
-          gl.activeTexture(gl.TEXTURE1);
-          gl.bindTexture(gl.TEXTURE_2D, tex);
-          gl.uniform1f(this.uHasTexture, 1);
-        } else {
-          gl.uniform1f(this.uHasTexture, 0);
-        }
+      gl.bindVertexArray(null);
+      return;
+    }
+
+    for (const c of this.chunks) {
+      // Base pass.
+      gl.useProgram(this.program);
+      gl.uniformMatrix4fv(this.uProjView, false, projView);
+      const baseId = this.pickAnim(c.tex, c.animFreq, time);
+      const baseTex = baseId !== null ? this.textures.get(baseId) : undefined;
+      if (baseTex) {
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, baseTex);
+        gl.uniform1f(this.uHasTexture, 1);
+      } else {
+        gl.uniform1f(this.uHasTexture, 0);
+      }
+      gl.uniform1f(this.uLit, c.lit ? 1 : 0);
+      gl.uniform2f(this.uScroll, c.scroll[0], c.scroll[1]);
+      gl.uniform1f(this.uTime, time);
+      this.setBlend(c.blend);
+      gl.drawElements(gl.TRIANGLES, c.count, gl.UNSIGNED_INT, c.first * 4);
+
+      // Overlay passes (additive / blended / multiply).
+      for (const o of c.overlays) {
+        const otex = this.textures.get(o.tex);
+        if (!otex) continue;
+        gl.useProgram(this.fxProgram);
+        gl.uniformMatrix4fv(this.fxProjView, false, projView);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, otex);
+        gl.uniform2f(this.fxScroll, o.scroll[0], o.scroll[1]);
+        gl.uniform1f(this.fxTime, time);
+        this.setBlend(o.blend);
         gl.drawElements(gl.TRIANGLES, c.count, gl.UNSIGNED_INT, c.first * 4);
       }
     }
+    gl.disable(gl.BLEND);
     gl.bindVertexArray(null);
   }
 }

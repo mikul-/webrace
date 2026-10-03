@@ -1,0 +1,14 @@
+# Keep the backend build context small — only `server/` is copied by
+# Dockerfile.backend anyway.
+.git
+node_modules
+web/node_modules
+web/dist
+web/pkg
+core/target
+core/target-wasm
+maps
+docs
+*.log
+*.zip
+.pk3-cache

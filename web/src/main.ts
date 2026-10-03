@@ -7,7 +7,7 @@ import { Renderer, perspective, lookAt, multiply } from "./render/renderer";
 import { fetchBsp } from "./sim/map";
 import { api } from "./base";
 import { loadTexture } from "./render/textures";
-import { loadShader } from "./render/shader";
+import { loadShader, loadShaders, buildPlan, BlendMode } from "./render/shader";
 import { getIdentity, registerNickname, submitTime } from "./net/leaderboard";
 import { Menu } from "./ui/menu";
 import { MovementHud } from "./ui/movement_hud";
@@ -167,24 +167,74 @@ async function loadMap(explicitName?: string) {
 
     // Unique shaders used by the map.
     const uniqueShaders = Array.from(new Set(Array.from(shaderIdx)));
-    const texIdByShader = new Map<number, number>();
+    const shaderNames = uniqueShaders.map((s) => core.bsp_shader_name(mapId, s));
+    const defs = await loadShaders(shaderNames);
+
+    // Texture registration by name (cache so anim frames / overlays share).
+    const texIdByName = new Map<string, number>();
+    const getTex = async (name: string): Promise<number | null> => {
+      const key = name.toLowerCase();
+      const cached = texIdByName.get(key);
+      if (cached !== undefined) return cached === -1 ? null : cached;
+      const img = await loadTexture(name);
+      const id = img ? renderer!.registerTexture(img) : -1;
+      texIdByName.set(key, id);
+      return id === -1 ? null : id;
+    };
+
+    type ChunkInfo = {
+      tex: number[];
+      animFreq: number;
+      blend: BlendMode;
+      lit: boolean;
+      scroll: [number, number];
+      overlays: Array<{ tex: number; blend: BlendMode; scroll: [number, number] }>;
+    };
+    const infoByShader = new Map<number, ChunkInfo | null>();
     await Promise.all(
       uniqueShaders.map(async (s) => {
-        const shaderName = core.bsp_shader_name(mapId, s);
-        const img = await loadTexture(shaderName);
-        if (img) {
-          texIdByShader.set(s, renderer!.registerTexture(img));
+        const name = core.bsp_shader_name(mapId, s);
+        const def = defs.get(name.toLowerCase()) ?? null;
+        if (!def) {
+          const id = await getTex(name);
+          infoByShader.set(s, {
+            tex: id !== null ? [id] : [],
+            animFreq: 0,
+            blend: "opaque",
+            lit: true,
+            scroll: [0, 0],
+            overlays: [],
+          });
+          return;
         }
+        const plan = buildPlan(def);
+        if (plan.noDraw) {
+          infoByShader.set(s, null);
+          return;
+        }
+        const frames = plan.baseAnim ?? (plan.baseTex ? [plan.baseTex] : [name]);
+        const ids = (await Promise.all(frames.map(getTex))).filter((x): x is number => x !== null);
+        const overlays: ChunkInfo["overlays"] = [];
+        for (const o of plan.overlays) {
+          const id = await getTex(o.tex);
+          if (id !== null) overlays.push({ tex: id, blend: o.blend, scroll: [0, 0] });
+        }
+        infoByShader.set(s, {
+          tex: ids,
+          animFreq: plan.baseFreq,
+          blend: plan.baseBlend,
+          lit: plan.lit,
+          scroll: plan.baseScroll ?? [0, 0],
+          overlays,
+        });
       }),
     );
 
     const chunks = [];
     for (let i = 0; i < chunkCount; i++) {
-      chunks.push({
-        first: chunkFirst[i],
-        count: chunkCountArr[i],
-        tex: texIdByShader.get(shaderIdx[i]) ?? -1,
-      });
+      const info = infoByShader.get(shaderIdx[i]);
+      if (!info) continue; // missing or nodraw
+      chunks.push({ first: chunkFirst[i], count: chunkCountArr[i], ...info });
     }
     renderer.setChunks(chunks);
 
@@ -493,7 +543,7 @@ function loop() {
     const eye = core.session_eye(sessionId) as unknown as Float32Array;
     const angles = core.session_angles(sessionId) as unknown as Float32Array;
     const view = lookAt([eye[0], eye[1], eye[2]], angles[0], angles[1]);
-    renderer.draw(multiply(proj, view), [eye[0], eye[1], eye[2]]);
+    renderer.draw(multiply(proj, view), [eye[0], eye[1], eye[2]], now / 1000);
   }
 
   requestAnimationFrame(loop);

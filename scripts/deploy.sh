@@ -31,10 +31,13 @@ echo "==> npm install + build static client (base=/webrace/)"
 (cd "$SITE/web" && WB_BASE=/webrace/ npx vite build)
 
 echo "==> (re)start backend container + reload Caddy on server"
+# `--no-cache`: the NFS mount can make the `COPY server/` layer look unchanged
+# to Docker's build cache, so force a fresh copy of the server code.
 ssh "$SERVER" '
   set -e
   cd /mnt/storage1/www/webrace
-  sudo docker compose up -d --build webrace
+  sudo docker compose build --no-cache webrace
+  sudo docker compose up -d webrace
   sudo docker exec ix-webserver-webserver-1 caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
 '
 
