@@ -230,7 +230,19 @@ impl World {
                         best_surface_flags = brush_surface_flags;
                         best_contents = brush_contents;
                     }
-                } else if enter < best_frac {
+                } else if enter < best_frac - 1e-4 {
+                    best_frac = enter;
+                    best_normal = enter_normal;
+                    best_surface_flags = brush_surface_flags;
+                    best_contents = brush_contents;
+                } else if (enter - best_frac).abs() <= 1e-4
+                    && brush_surface_flags & crate::pmove::SURF_SLICK != 0
+                    && best_surface_flags & crate::pmove::SURF_SLICK == 0
+                {
+                    // Coincident surfaces: defrag maps often place an invisible
+                    // `common/slick` brush exactly over a visual floor brush. The
+                    // slick overlay must win the tie so the floor is actually
+                    // slippery (Warfork does this via its brush ordering).
                     best_frac = enter;
                     best_normal = enter_normal;
                     best_surface_flags = brush_surface_flags;

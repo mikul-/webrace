@@ -148,6 +148,17 @@ reconstruct context without re-deriving it.
      discarded and the player stuck with the blocked slide. Q3 compares
      **horizontal** distance (`down_dist` vs `up_dist`). Fixed to match.
 
+### Slick not working on some maps (coincident `common/slick` overlay)
+- On maps like `idiotism2_slick`, nothing was slippery. The map places an
+  **invisible `textures/common/slick` brush exactly coincident** with the visible
+  floor brush (same planes, `flags=0xca2` incl. `SURF_SLICK`, `contents`
+  `SOLID|TRANSLUCENT`). Our trace hit both at the same fraction and kept the
+  first (`<` strict), which was the visible non-slick brush, so the floor had
+  no slick flag.
+- Fix: on an (near-)equal fraction, prefer the brush whose surface flags include
+  `SURF_SLICK`. This encodes the "invisible slick overlay" convention. Regression
+  test `slick_overlay.rs`.
+
 ### Dash not registering on ramps + slope speed loss
 - **Dash flicker on ramps:** `grounded()` treated `velocity[2] > 20` as airborne,
   but Warfork `PM_CategorizePosition` uses **`velocity[2] > 180`**. Running up a
