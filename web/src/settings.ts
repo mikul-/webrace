@@ -19,7 +19,7 @@ export interface Settings {
 const KEY = "webrace.settings";
 
 /** Bump to force the defaults below onto existing installs (one time). */
-const SOUND_VERSION = 2;
+const SOUND_VERSION = 3;
 
 const DEFAULTS: Settings = {
   fov: 125,
@@ -30,7 +30,7 @@ const DEFAULTS: Settings = {
   volume: 0.8,
   sounds: {
     jump: "FS Ground Civilian Walk N05.wav",
-    dash: "FS Ground Civilian Walk N03.wav",
+    dash: "ljud3.wav",
     walljump: "FS Ground Civilian Walk N03.wav",
   },
   soundVersion: SOUND_VERSION,

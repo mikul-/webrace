@@ -362,8 +362,8 @@ Implemented. Summary / where it lives:
   used pooled `HTMLAudioElement`s, but switching files could leave the pool in a
   state where `play()` silently did nothing (real-browser flakiness, hard to
   reproduce headless); Web Audio fixed it and gives reliable overlap.
-- Defaults: `jump → FS Ground Civilian Walk N05.wav`,
-  `dash`/`walljump → FS Ground Civilian Walk N03.wav`. A one-time
+- Defaults: `jump → FS Ground Civilian Walk N05.wav`, `dash → ljud3.wav`,
+  `walljump → FS Ground Civilian Walk N03.wav`. A one-time
   `soundVersion` migration in `loadSettings` re-applies those onto existing
   installs so testers see them without clearing localStorage.
 - **Master volume**: a 0..1 slider in the Sound tab (`Settings.volume`, default
