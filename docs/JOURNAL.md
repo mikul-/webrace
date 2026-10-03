@@ -148,6 +148,18 @@ reconstruct context without re-deriving it.
      discarded and the player stuck with the blocked slide. Q3 compares
      **horizontal** distance (`down_dist` vs `up_dist`). Fixed to match.
 
+### Dash not registering on ramps + slope speed loss
+- **Dash flicker on ramps:** `grounded()` treated `velocity[2] > 20` as airborne,
+  but Warfork `PM_CategorizePosition` uses **`velocity[2] > 180`**. Running up a
+  ramp redirects horizontal speed into a small `+z` (e.g. ~32), so our code
+  flagged the player as airborne and the dash silently failed — intermittently,
+  depending on ramp slope/speed. Raised the threshold to 180. Regression test
+  `dash.rs`.
+- **Slope speed loss:** we had removed Warfork `PM_WalkMove`'s ground-clip
+  re-normalize (`vel = VectorLength(velocity); PM_ClipVelocity; VectorNormalize;
+  VectorScale(vel)`). Running up a slope then bled speed every tick. Restored it
+  (safe now that there is no gravity on the ground), so slopes preserve speed.
+
 ### Faithful Warfork walljump (`PM_CheckWallJump`) + 0.25 ground trace
 - Our old walljump was a custom "wall-dash" that *reflected* the horizontal
   velocity (`v - 2(v·n)n`), giving the wrong angle and losing speed. Warfork's

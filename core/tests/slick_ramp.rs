@@ -31,17 +31,16 @@ fn ramp_world(normal: [f32; 3]) -> World {
     }
 }
 
-/// A moving player on a *walkable* slick surface keeps their horizontal speed
+/// A moving player on a flat slick surface keeps their horizontal speed
 /// (slick = no friction). This is Warfork's core slick behavior.
 #[test]
 fn slick_surface_preserves_moving_speed() {
-    // Gentle ramp (normal.z ~= 0.995, walkable).
-    let mut pmove = Pmove::new(ramp_world([-0.1, 0.0, 0.995]), 1.0 / 250.0);
+    // Flat slick floor (normal [0,0,1]).
+    let mut pmove = Pmove::new(ramp_world([0.0, 0.0, 1.0]), 1.0 / 250.0);
     let mut ps = PlayerState::default();
     ps.origin = [0.0, 0.0, 60.0];
     ps.viewangles = [0.0, 0.0, 0.0];
     pmove.drop_to_ground(&mut ps);
-    // Give a running start (into the hill, +X).
     ps.velocity = [400.0, 0.0, 0.0];
 
     for _ in 0..250 {
@@ -49,8 +48,8 @@ fn slick_surface_preserves_moving_speed() {
     }
     let h = (ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]).sqrt();
     println!("slick moving: hspeed={h:.1} pos={:?}", ps.origin);
-    // No friction on slick: the player should retain most of their speed.
-    assert!(h > 300.0, "slick should preserve moving speed, got {h}");
+    // No friction on slick: the player should retain essentially all speed.
+    assert!(h > 390.0, "slick should preserve moving speed, got {h}");
 }
 
 /// A stationary player on a gentle slick ramp does NOT slide (Warfork applies

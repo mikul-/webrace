@@ -162,9 +162,12 @@ impl Pmove {
     /// ground — this prevents the player from "sticking" and floating when
     /// pressed against walls. Also records the ground surface's flags (slick).
     fn grounded(&mut self, ps: &mut PlayerState) -> bool {
-        // Never grounded while rising — a player who just jumped is airborne
-        // even if their box still overlaps the floor's down-trace margin.
-        if ps.velocity[2] > 20.0 {
+        // Warfork `PM_CategorizePosition`: only treat the player as airborne
+        // from upward velocity when it exceeds 180 ups. A lower threshold (we
+        // used 20) wrongly reports "airborne" while running up a ramp (the ramp
+        // redirects horizontal speed into a small +z), which made things like
+        // the dash intermittently fail to register on slopes.
+        if ps.velocity[2] > 180.0 {
             ps.ground_flags = 0;
             ps.ground_normal = [0.0, 0.0, 1.0];
             return false;
@@ -376,17 +379,32 @@ impl Pmove {
             ps.velocity[2] -= GRAVITY * self.frametime;
         }
 
-        // Ground-plane projection: keep the player on the surface by clipping
-        // the velocity against the ground normal. On a descending slope this
-        // redirects horizontal motion into downhill motion.
+        // Ground-plane clip (Warfork `PM_WalkMove`): clip the velocity against
+        // the ground normal, then restore the original magnitude so running up
+        // or down a slope does not bleed speed:
+        //   vel = VectorLength(velocity);
+        //   PM_ClipVelocity(velocity, groundNormal, velocity, OVERCLIP);
+        //   VectorNormalize(velocity); VectorScale(velocity, vel, velocity);
         if ps.on_ground {
             let n = ps.ground_normal;
             if n[2] > 0.001 {
                 let dot = ps.velocity[0] * n[0] + ps.velocity[1] * n[1] + ps.velocity[2] * n[2];
                 if dot < 0.0 {
-                    ps.velocity[0] -= n[0] * dot;
-                    ps.velocity[1] -= n[1] * dot;
-                    ps.velocity[2] -= n[2] * dot;
+                    let vel = (ps.velocity[0] * ps.velocity[0]
+                        + ps.velocity[1] * ps.velocity[1]
+                        + ps.velocity[2] * ps.velocity[2])
+                        .sqrt();
+                    clip_velocity(&mut ps.velocity, n, OVERCLIP);
+                    let clipped = (ps.velocity[0] * ps.velocity[0]
+                        + ps.velocity[1] * ps.velocity[1]
+                        + ps.velocity[2] * ps.velocity[2])
+                        .sqrt();
+                    if clipped > 0.0 {
+                        let s = vel / clipped;
+                        ps.velocity[0] *= s;
+                        ps.velocity[1] *= s;
+                        ps.velocity[2] *= s;
+                    }
                 }
             }
         }
