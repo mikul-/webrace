@@ -6,9 +6,9 @@
 use webrace_core::bsp::Plane;
 use webrace_core::trace::World;
 
-fn overlay_world(slick_first: bool) -> World {
+fn overlay_world(_slick_first: bool) -> World {
     // One solid box (x,y in [-10000,10000], z in [-1000,0]).
-    let box_planes = |slick: bool| {
+    let box_planes = || {
         vec![
             Plane { normal: [0.0, 0.0, 1.0], dist: 0.0 },
             Plane { normal: [0.0, 0.0, -1.0], dist: 1000.0 },
@@ -18,10 +18,9 @@ fn overlay_world(slick_first: bool) -> World {
             Plane { normal: [0.0, -1.0, 0.0], dist: 10000.0 },
         ]
     };
-    let _ = slick_first;
-    let mut planes = box_planes(false);
-    planes.extend(box_planes(false));
-    // Two switches, same 6 planes each. The slick one uses shader 1.
+    let mut planes = box_planes();
+    planes.extend(box_planes());
+    // Two brushes, same 6 planes each. The slick one uses shader 1.
     World {
         brush_plane_offsets: vec![0, 6],
         brush_plane_count: vec![6, 6],

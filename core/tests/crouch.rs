@@ -37,13 +37,28 @@ fn crouch_shrinks_box_and_lowers_eye() {
     assert_eq!(pmove.maxs[2], 40.0, "standing box should be 40 tall");
     assert!(!ps.crouched);
 
-    // Crouch: box maxs.z = 16.
+    // Press crouch: the box interpolates (does not snap) — after one tick it is
+    // strictly between the stand and crouch heights.
     cmd.buttons |= webrace_core::input::BUTTON_CROUCH;
     pmove.step(&mut ps, &cmd);
-    assert_eq!(pmove.maxs[2], 16.0, "crouched box should be 16 tall");
+    assert!(
+        pmove.maxs[2] < 40.0 && pmove.maxs[2] > 16.0,
+        "crouch should transition smoothly, got maxs.z={}",
+        pmove.maxs[2]
+    );
     assert!(ps.crouched);
 
-    println!("crouch: standing maxs.z=40, crouched maxs.z={}", pmove.maxs[2]);
+    // After CROUCHTIME (100ms = 25 ticks) it is fully crouched.
+    for _ in 0..30 {
+        pmove.step(&mut ps, &cmd);
+    }
+    assert_eq!(pmove.maxs[2], 16.0, "crouched box should be 16 tall");
+    assert_eq!(ps.viewheight, 12.0, "crouched viewheight should be 12");
+
+    println!(
+        "crouch: standing maxs.z=40, crouched maxs.z={}, viewheight={}",
+        pmove.maxs[2], ps.viewheight
+    );
 }
 
 /// A crouched player must fit through a low tunnel (e.g. 44 units) but a
@@ -98,4 +113,14 @@ fn crouch_fits_under_low_ceiling() {
     }
     println!("crouch under 44: final x={:.0}", ps.origin[0]);
     assert!(ps.origin[0] > 250.0, "crouched player should pass a 44-unit tunnel, x={}", ps.origin[0]);
+
+    // Under the low ceiling, releasing crouch must NOT stand up (head-chomp):
+    // the taller box would be blocked, so the player stays crouched.
+    let cmd2 = Cmd::default();
+    for _ in 0..30 {
+        pmove.step(&mut ps, &cmd2); // no crouch button
+    }
+    println!("after release under ceiling: crouched={} maxs.z={:.1}", ps.crouched, pmove.maxs[2]);
+    assert!(ps.crouched, "should stay crouched under a low ceiling");
+    assert!(pmove.maxs[2] < 20.0, "should not stand up under the ceiling");
 }

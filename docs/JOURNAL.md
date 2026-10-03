@@ -148,6 +148,14 @@ reconstruct context without re-deriving it.
      discarded and the player stuck with the blocked slide. Q3 compares
      **horizontal** distance (`down_dist` vs `up_dist`). Fixed to match.
 
+### Smooth crouch transition (Warfork `PM_AdjustBBox`)
+- Crouch was instantaneous (box snapped 40 -> 16). Ported Warfork's transition:
+  a `crouchtime` (0..`CROUCHTIME`=100ms) interpolates the box maxs.z (40 -> 16)
+  and `viewheight` (30 -> 12) over 100 ms. Standing up is refused while the
+  taller box would clip a ceiling (head-chomp): trace the *wish* box at the
+  origin and keep the crouched box if `allsolid || startsolid`. `PlayerState`
+  gained `crouchtime: f32` and `viewheight: f32`; `eye()` now uses `viewheight`.
+
 ### Crouch: eye height + step-up oscillation under low ceilings
 - **Eye/viewheight was wrong:** we used stand 26 / crouch 18, but Warfork uses
   `playerbox_stand_viewheight = 30` / `playerbox_crouch_viewheight = 12`. The

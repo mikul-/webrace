@@ -29,12 +29,16 @@ pub struct PlayerState {
     pub viewangles: [f32; 3],
     pub doshtime: u32,
     pub wjtime: u32,
-    pub crouchtime: u32,
+    /// Crouch transition progress in milliseconds (0 = standing, `CROUCHTIME`
+    /// = fully crouched). Warfork `PM_STAT_CROUCHTIME`.
+    pub crouchtime: f32,
     pub special_held: bool,
     pub jump_held: bool,
     pub on_ground: bool,
     /// Whether the player is currently crouched (shrinks the box + view).
     pub crouched: bool,
+    /// Eye height above the origin (interpolated 30 stand -> 12 crouch).
+    pub viewheight: f32,
     /// Surface flags of the ground currently stood on (SURF_SLICK etc.).
     pub ground_flags: i32,
     /// Normal of the ground plane currently stood on (for slope sliding).
@@ -55,11 +59,12 @@ impl Default for PlayerState {
             viewangles: [0.0, 0.0, 0.0],
             doshtime: 0,
             wjtime: 0,
-            crouchtime: 0,
+            crouchtime: 0.0,
             special_held: false,
             jump_held: false,
             on_ground: false,
             crouched: false,
+            viewheight: STAND_VIEWHEIGHT,
             ground_flags: 0,
             ground_normal: [0.0, 0.0, 1.0],
             waterlevel: 0,
@@ -78,6 +83,11 @@ pub const SURF_NOWALLJUMP: i32 = 0x80000;
 /// `pm_wjupspeed` is in `lib.rs` as `PM_WJ_UPSPEED`.
 pub const PM_WJ_BOUNCE_FACTOR: f32 = 0.3;
 pub const PM_WJ_CLIP: f32 = 1.0005;
+
+/// Warfork crouch transition (`gs_public.h` / `gs_pmove.c`).
+pub const CROUCHTIME: f32 = 100.0;
+pub const STAND_VIEWHEIGHT: f32 = 30.0;
+pub const CROUCH_VIEWHEIGHT: f32 = 12.0;
 
 /// Water movement constants (Warfork `gs_pmove.c`).
 pub const PM_WATERACCELERATE: f32 = 10.0;
@@ -296,16 +306,46 @@ impl Pmove {
         ps.velocity[2] *= newspeed;
     }
 
+    /// Warfork `PM_AdjustBBox`: transition the player box and view height
+    /// between standing and crouching over `CROUCHTIME` ms (so crouch is smooth,
+    /// not instant). Standing up is refused while the taller box would be
+    /// blocked by a low ceiling ("head-chomping").
+    fn adjust_bbox(&mut self, ps: &mut PlayerState, crouch: bool) {
+        let msec = self.frametime * 1000.0;
+        let mins = crate::trace::PLAYER_MINS;
+        let maxs = crate::trace::PLAYER_MAXS;
+        let cmins = crate::trace::CROUCH_MINS;
+        let cmaxs = crate::trace::CROUCH_MAXS;
+
+        if crouch {
+            // Going down: no need to check for head-chomping.
+            ps.crouchtime = (ps.crouchtime + msec).min(CROUCHTIME);
+        } else if ps.crouchtime > 0.0 {
+            // Try to stand: check the head clearance with the desired box.
+            let newtime = (ps.crouchtime - msec).max(0.0);
+            let f = newtime / CROUCHTIME;
+            let wish_maxs = lerp3(maxs, cmaxs, f);
+            let tr = self.world.trace(ps.origin, mins, wish_maxs, ps.origin);
+            if !(tr.all_solid || tr.start_solid) {
+                ps.crouchtime = newtime;
+            }
+        }
+
+        let f = ps.crouchtime / CROUCHTIME;
+        self.mins = lerp3(mins, cmins, f);
+        self.maxs = lerp3(maxs, cmaxs, f);
+        ps.viewheight = STAND_VIEWHEIGHT - f * (STAND_VIEWHEIGHT - CROUCH_VIEWHEIGHT);
+        ps.crouched = ps.crouchtime > 0.0;
+    }
+
     /// Advance one tick.
     pub fn step(&mut self, ps: &mut PlayerState, cmd: &Cmd) {
         let special = cmd.buttons & crate::input::BUTTON_SPECIAL != 0;
         let jump = cmd.buttons & crate::input::BUTTON_JUMP != 0;
         let crouch = cmd.buttons & crate::input::BUTTON_CROUCH != 0;
 
-        // Crouch state. (We don't yet block uncrouching under low ceilings.)
-        ps.crouched = crouch;
-        self.mins = if crouch { crate::trace::CROUCH_MINS } else { crate::trace::PLAYER_MINS };
-        self.maxs = if crouch { crate::trace::CROUCH_MAXS } else { crate::trace::PLAYER_MAXS };
+        // Crouch: smooth transition over CROUCHTIME ms (Warfork PM_AdjustBBox).
+        self.adjust_bbox(ps, crouch);
 
         // Timers decay (in milliseconds).
         if ps.doshtime > 0 {
@@ -1127,6 +1167,15 @@ impl Pmove {
 
 /// Convenience for tests: expose the crouch max speed.
 pub const CROUCH_SPEEDV: f32 = CROUCH_SPEED;
+
+/// Linear interpolation: `a + (b - a) * t`.
+fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
 
 /// Q3 `PM_ClipVelocity`: slide a velocity off a surface normal with a slight
 /// overbounce (or underbounce, depending on direction).
